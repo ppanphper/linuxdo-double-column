@@ -1,0 +1,39 @@
+# Linux.do 双栏阅读预览
+
+Tampermonkey 用户脚本：在 [linux.do](https://linux.do) 话题列表页点击帖子时，在右侧面板中直接预览和交互，无需离开列表页。基于 Discourse JSON API 直接渲染，比 iframe 方案快得多。
+
+## 安装
+
+1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展
+2. 点击安装脚本：[linuxdo-double-column.user.js](https://raw.githubusercontent.com/ppanphper/linuxdo-double-column/main/linuxdo-double-column.user.js)
+3. 打开或刷新 linux.do，点击任意话题即可在右侧预览
+
+脚本内置 `@updateURL`，Tampermonkey 会自动检查本仓库的新版本。
+
+## 功能
+
+### 阅读
+- 话题列表点击 → 右侧面板极速预览（JSON API 直接渲染 + 内存缓存 + 悬停预取）
+- 双向按需加载楼层（上下滚动自动补载），支持超长帖
+- 时间线快捷翻页：拖动滑块实时滚动、显示楼层号/日期、首尾日期快跳
+- 「返回」按钮：跳离阅读位置后可一键回到未读楼层（对齐官方逻辑）
+- 打开读过的帖子自动定位到第一条未读楼层
+- 新回复实时推送加载（复用页面 MessageBus，零轮询）
+- 图片点击弹窗查看（lightbox），Esc 关闭
+- 楼层显示相对时间（x 秒/分钟/小时/天前），悬停看完整日期
+- 用户头衔、群组徽章、管理身份、楼主标签展示
+- 楼层回复关系：头部显示被回复人头像/昵称（点击跳转），底部「N 个回复」展开官方样式的回复列表
+- 面板宽度拖动调节、放大模式、浏览器前进后退联动
+
+### 交互
+- 回复主题/回复楼层（Markdown 工具栏：加粗/斜体/链接/引用/代码/列表）
+- 图片粘贴/拖拽/选择上传（官方 `/uploads.json`）
+- 实时预览（复用页面内 Discourse 渲染器，效果与官方一致）
+- 点赞/取消点赞、收藏（原生书签）、投票、复制楼层链接
+- 通知级别切换（关注/跟踪/普通/免打扰）
+- 阅读时长正常上报（`/topics/timings`），积分、已读进度与官方一致
+
+## 说明
+
+- 仅在 `https://linux.do/*` 生效；理论上兼容其他 Discourse 站点（需自行修改 `@match`）
+- 未实现：🚀 Boost（消耗型资源，语义不明）、热门回复过滤、Reader Mode
