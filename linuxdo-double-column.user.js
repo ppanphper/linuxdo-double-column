@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.9.1
-// @description  在 Linux.do 话题列表中用右侧面板预览帖子（JSON API 直接渲染，支持回复/点赞/收藏/投票/复制链接/时间线快捷翻页/通知级别，阅读时长正常上报）
+// @version      0.13.6
+// @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
 // @supportURL   https://github.com/ppanphper/linuxdo-double-column/issues
@@ -19,6 +19,8 @@
   const PANEL_ID = 'ld-double-column-panel';
   const STYLE_ID = 'ld-double-column-style';
   const WIDTH_KEY = 'ld-double-column-width';
+  const VIEW_KEY = 'ld-double-column-view';
+  const TREE_SORT_KEY = 'ld-double-column-tree-sort';
   const DEFAULT_WIDTH = 600;
   const MAX_WIDTH = 680;
   const MIN_WIDTH = 380;
@@ -87,6 +89,19 @@
     endIdx: -1,
     currentIdx: 0,
     loadedIds: new Set(),
+    allPosts: new Map(),
+    viewMode: localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'original',
+    treeSort: localStorage.getItem(TREE_SORT_KEY) === 'time' ? 'time' : 'hot',
+    treeExpanded: new Set(),
+    treeRepliesLoaded: new Set(),
+    treeRepliesLoading: new Set(),
+    treeReplyIds: new Map(),
+    treeDirectReplyIds: new Map(),
+    treeBranchReplyIds: new Map(),
+    viewBar: null,
+    viewNote: null,
+    treeButton: null,
+    treeSortSelect: null,
     loadingMore: false,
     loadingBefore: false,
     hoverTimer: 0,
@@ -264,8 +279,9 @@
 
       #${PANEL_ID} {
         position: fixed;
-        z-index: 2147483000;
-        inset: 0 0 0 auto;
+        /* 低于站点头部 (z-index: 1000)，让头像弹出的通知菜单能盖在面板上方 */
+        z-index: 999;
+        inset: var(--ld-preview-top, 0px) 0 0 auto;
         display: none;
         width: var(--ld-preview-width);
         min-width: 0;
@@ -349,6 +365,59 @@
         color: var(--primary, #202124);
         background: var(--secondary, #ffffff);
         border-bottom: 1px solid var(--primary-low, #d7d7d7);
+      }
+
+      #${PANEL_ID} .ld-preview-view-bar {
+        display: flex;
+        min-height: 46px;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        color: var(--primary-medium, #757575);
+        background: var(--secondary, #ffffff);
+        border-bottom: 1px solid var(--primary-low, #d7d7d7);
+        font-size: 13px;
+      }
+
+      #${PANEL_ID} .ld-preview-view-bar[hidden] {
+        display: none;
+      }
+
+      #${PANEL_ID} .ld-preview-view-title {
+        color: var(--primary, #202124);
+        font-size: 14px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      #${PANEL_ID} .ld-preview-view-note {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-sort,
+      #${PANEL_ID} .ld-preview-view-switch {
+        width: auto;
+        max-width: 132px;
+        flex-shrink: 0;
+        padding: 5px 8px;
+        color: var(--primary, #202124);
+        background: var(--secondary, #ffffff);
+        border: 1px solid var(--primary-low-mid, #cccccc);
+        border-radius: 5px;
+        cursor: pointer;
+        font: inherit;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-timeline {
+        display: none !important;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-scroll {
+        padding-right: 18px;
       }
 
       #${PANEL_ID} .ld-preview-heading {
@@ -605,21 +674,258 @@
       }
 
       #${PANEL_ID} .ld-preview-post {
+        --ld-post-avatar-size: 32px;
+        --ld-post-header-gap: 8px;
         padding: 14px 0 2px;
         border-bottom: 1px solid var(--primary-low, #e3e3e3);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-op {
+        margin-bottom: 12px;
+        padding-bottom: 8px;
+        border-bottom: 2px solid var(--primary-low, #e3e3e3);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-op > .ld-preview-post {
+        border-bottom: 0;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-node {
+        --ld-tree-axis: 14px;
+        --ld-tree-indent: clamp(17px, 2vw, 22px);
+        --ld-tree-connector: rgba(127, 127, 127, 0.24);
+        --ld-tree-connector: color-mix(in srgb, var(--primary, #202124) 18%, transparent);
+        position: relative;
+        min-width: 0;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-node > .ld-preview-post {
+        position: relative;
+        border-bottom: 0;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-children {
+        position: relative;
+        margin-left: var(--ld-tree-axis);
+        padding-left: var(--ld-tree-indent);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-children[hidden] {
+        display: none;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-rail {
+        position: absolute;
+        z-index: 1;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 14px;
+        padding: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        cursor: pointer;
+        transform: translateX(-50%);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-stem {
+        position: absolute;
+        z-index: 1;
+        top: 36px;
+        bottom: 0;
+        left: var(--ld-tree-axis);
+        width: 14px;
+        padding: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        cursor: pointer;
+        transform: translateX(-50%);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-stem::before {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 50%;
+        width: 1px;
+        background: var(--ld-tree-connector);
+        content: '';
+        transform: translateX(-50%);
+        transition: background-color 120ms ease;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-stem::after {
+        position: absolute;
+        bottom: 9px;
+        left: 50%;
+        display: flex;
+        width: 14px;
+        height: 14px;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        color: var(--ld-tree-connector);
+        background: var(--secondary, #ffffff);
+        border: 1px solid var(--ld-tree-connector);
+        border-radius: 50%;
+        content: '−';
+        font-size: 10px;
+        font-weight: 600;
+        line-height: 1;
+        transform: translate(-50%, 50%);
+        transition: color 120ms ease, border-color 120ms ease;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-node.is-tree-rail-hovered > .ld-preview-post > .ld-preview-tree-stem::before {
+        background: var(--tertiary, #0088cc);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-node.is-tree-rail-hovered > .ld-preview-post > .ld-preview-tree-stem::after {
+        color: var(--tertiary, #0088cc);
+        background: var(--secondary, #ffffff);
+        border-color: var(--tertiary, #0088cc);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-children > .ld-preview-tree-node::before {
+        position: absolute;
+        z-index: 0;
+        top: 0;
+        left: calc(var(--ld-tree-indent) * -1);
+        width: var(--ld-tree-indent);
+        height: 22px;
+        box-sizing: border-box;
+        border-bottom: 1px solid var(--ld-tree-connector);
+        border-left: 1px solid var(--ld-tree-connector);
+        border-bottom-left-radius: 8px;
+        content: '';
+        pointer-events: none;
+        transition: border-color 120ms ease;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-node.is-tree-rail-hovered > .ld-preview-tree-children > .ld-preview-tree-node::before {
+        border-color: var(--tertiary, #0088cc);
+      }
+
+      /* 非末尾兄弟负责延续竖线；最后一条只保留上方弯折，自然收尾。 */
+      #${PANEL_ID} .ld-preview-tree-children > .ld-preview-tree-node:not(:last-of-type)::after {
+        position: absolute;
+        z-index: 0;
+        top: 22px;
+        bottom: -2px;
+        left: calc(var(--ld-tree-indent) * -1);
+        width: 1px;
+        background: var(--ld-tree-connector);
+        content: '';
+        pointer-events: none;
+        transform: translateX(-50%);
+        transition: background-color 120ms ease;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-node.is-tree-rail-hovered > .ld-preview-tree-children > .ld-preview-tree-node:not(:last-of-type)::after {
+        background: var(--tertiary, #0088cc);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-collapse {
+        display: inline-flex;
+        width: auto;
+        height: 22px;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto 0 0;
+        padding: 0 7px;
+        color: var(--tertiary, #0088cc);
+        background: rgba(0, 136, 204, 0.12);
+        border: 1px solid var(--tertiary, #0088cc);
+        border-radius: 11px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 11px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-collapse:disabled {
+        cursor: wait;
+        opacity: 0.7;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-collapse:hover {
+        color: var(--secondary, #ffffff);
+        background: var(--tertiary, #0088cc);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-empty {
+        padding: 28px 12px;
+        color: var(--primary-medium, #757575);
+        text-align: center;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-tree-op {
+        margin-bottom: 5px;
+        padding-bottom: 3px;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-post {
+        --ld-post-avatar-size: 28px;
+        --ld-post-header-gap: 7px;
+        padding-top: 8px;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-post-header {
+        margin-bottom: 3px;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-avatar {
+        width: var(--ld-post-avatar-size);
+        height: var(--ld-post-avatar-size);
+        flex-basis: var(--ld-post-avatar-size);
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-post .cooked {
+        line-height: 1.5;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-post .cooked > :first-child {
+        margin-top: 0;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-post .cooked > :last-child {
+        margin-bottom: 3px;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-post .cooked p {
+        margin-block: 4px;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-post-footer {
+        min-height: 24px;
+        align-items: center;
+        padding: 0 0 2px;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-post-action {
+        padding: 2px 6px;
+        line-height: 1.25;
+      }
+
+      #${PANEL_ID}.is-tree-view .ld-preview-tree-node + .ld-preview-tree-node {
+        margin-top: 2px;
       }
 
       #${PANEL_ID} .ld-preview-post-header {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: var(--ld-post-header-gap);
         margin-bottom: 8px;
       }
 
       #${PANEL_ID} .ld-preview-avatar {
-        width: 32px;
-        height: 32px;
-        flex: 0 0 32px;
+        width: var(--ld-post-avatar-size);
+        height: var(--ld-post-avatar-size);
+        flex: 0 0 var(--ld-post-avatar-size);
         border-radius: 50%;
       }
 
@@ -644,6 +950,11 @@
         font-size: 15px;
         line-height: 1.65;
         overflow-wrap: break-word;
+      }
+
+      /* 正文与用户名对齐；回复树的层级缩进仍由 tree-children 单独控制。 */
+      #${PANEL_ID} .ld-preview-post > .cooked {
+        margin-inline-start: calc(var(--ld-post-avatar-size) + var(--ld-post-header-gap));
       }
 
       #${PANEL_ID} .ld-preview-post .cooked img:not(.emoji) {
@@ -707,6 +1018,11 @@
         background: var(--primary-low, #e9e9e9);
       }
 
+      #${PANEL_ID} .ld-preview-reply-to.is-open {
+        color: var(--tertiary, #0088cc);
+        background: var(--primary-low, #e9e9e9);
+      }
+
       #${PANEL_ID} .ld-preview-reply-to + .ld-preview-post-meta {
         margin-left: 0;
       }
@@ -721,6 +1037,10 @@
         margin: 4px 0 12px 12px;
         padding: 6px 0 0 18px;
         border-left: 1px solid var(--primary-low-mid, #cccccc);
+      }
+
+      #${PANEL_ID} .ld-preview-embedded-parents {
+        margin-top: 0;
       }
 
       #${PANEL_ID} .ld-preview-embedded-reply {
@@ -754,6 +1074,12 @@
         font-weight: 600;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      #${PANEL_ID} .ld-preview-embedded-floor {
+        flex-shrink: 0;
+        color: var(--primary-medium, #757575);
+        font-size: 12px;
       }
 
       #${PANEL_ID} .ld-preview-username-secondary {
@@ -1197,6 +1523,14 @@
         #${PANEL_ID} .ld-preview-resizer {
           display: none;
         }
+
+        #${PANEL_ID} .ld-preview-view-note {
+          display: none;
+        }
+
+        #${PANEL_ID} .ld-preview-view-switch {
+          padding-inline: 7px;
+        }
       }
     `;
     document.head.appendChild(style);
@@ -1237,6 +1571,36 @@
 
     const content = document.createElement('div');
     content.className = 'ld-preview-content';
+
+    const viewBar = document.createElement('div');
+    viewBar.className = 'ld-preview-view-bar';
+    viewBar.hidden = true;
+
+    const viewTitle = document.createElement('span');
+    viewTitle.className = 'ld-preview-view-title';
+    viewTitle.textContent = '🌳 树状评论';
+
+    const viewNote = document.createElement('span');
+    viewNote.className = 'ld-preview-view-note';
+    viewNote.textContent = 'Nested Replies';
+
+    const treeSortSelect = document.createElement('select');
+    treeSortSelect.className = 'ld-preview-tree-sort';
+    treeSortSelect.title = '树状评论排序';
+    treeSortSelect.append(new Option('热门', 'hot'), new Option('时间', 'time'));
+    treeSortSelect.value = state.treeSort;
+    treeSortSelect.addEventListener('change', () => {
+      state.treeSort = treeSortSelect.value === 'time' ? 'time' : 'hot';
+      localStorage.setItem(TREE_SORT_KEY, state.treeSort);
+      if (state.viewMode === 'tree') renderTreeView();
+    });
+
+    const originalViewButton = document.createElement('button');
+    originalViewButton.type = 'button';
+    originalViewButton.className = 'ld-preview-view-switch';
+    originalViewButton.textContent = '切换到原始视图';
+    originalViewButton.addEventListener('click', () => setViewMode('original'));
+    viewBar.append(viewTitle, viewNote, treeSortSelect, originalViewButton);
 
     const scroll = document.createElement('div');
     scroll.className = 'ld-preview-scroll';
@@ -1341,6 +1705,9 @@
     });
     const refreshButton = createButton('↻', '刷新预览', () => {
       if (state.currentTopicId) loadTopic(state.currentTopicId, state.currentUrl, true);
+    });
+    const treeButton = createButton('🌳', '切换到树状评论', () => {
+      setViewMode(state.viewMode === 'tree' ? 'original' : 'tree');
     });
     const fullscreenButton = createButton('⛶', '放大预览', () => {
       state.fullscreen = !state.fullscreen;
@@ -1463,10 +1830,10 @@
     composerActions.append(composerCancel, composerSend);
     composer.append(composerTarget, composerTools, composerInput, composerFileInput, composerPreview, composerError, composerActions);
 
-    toolbar.append(heading, replyButton, originalButton, refreshButton, fullscreenButton, closeButton);
+    toolbar.append(heading, replyButton, treeButton, originalButton, refreshButton, fullscreenButton, closeButton);
     scroll.append(topSentinel, list, sentinel, replyBar);
     content.append(scroll, timeline, status, toast);
-    panel.append(resizer, toolbar, content, composer);
+    panel.append(resizer, toolbar, viewBar, content, composer);
     document.body.appendChild(panel);
 
     state.panel = panel;
@@ -1486,6 +1853,10 @@
     state.title = heading;
     state.status = status;
     state.toast = toast;
+    state.viewBar = viewBar;
+    state.viewNote = viewNote;
+    state.treeButton = treeButton;
+    state.treeSortSelect = treeSortSelect;
     state.composer = composer;
     state.composerTarget = composerTarget;
     state.composerTargetText = composerTargetText;
@@ -1621,6 +1992,13 @@
     state.width = width;
     document.documentElement.style.setProperty('--ld-preview-width', `${state.width}px`);
     if (persist) localStorage.setItem(WIDTH_KEY, String(state.width));
+  }
+
+  function updatePanelTop() {
+    // 面板顶到站点头部下沿，避免遮住右上角的头像与通知入口。
+    const header = document.querySelector('header.d-header');
+    const bottom = header ? header.getBoundingClientRect().bottom : 0;
+    document.documentElement.style.setProperty('--ld-preview-top', `${Math.max(0, Math.round(bottom))}px`);
   }
 
   function setStatus(message) {
@@ -2010,7 +2388,7 @@
     }
   }
 
-  function renderEmbeddedReply(reply) {
+  function renderEmbeddedReply(reply, jumpText = '↓ 跳到帖子') {
     const item = document.createElement('div');
     item.className = 'ld-preview-embedded-reply';
 
@@ -2031,6 +2409,12 @@
     name.textContent = reply.name || reply.username || '匿名';
     head.appendChild(name);
     appendUserBadges(head, reply);
+    if (reply.post_number) {
+      const floor = document.createElement('span');
+      floor.className = 'ld-preview-embedded-floor';
+      floor.textContent = `#${reply.post_number}`;
+      head.appendChild(floor);
+    }
 
     const body = document.createElement('div');
     body.className = 'cooked';
@@ -2039,12 +2423,22 @@
     const jump = document.createElement('button');
     jump.type = 'button';
     jump.className = 'ld-preview-embedded-jump';
-    jump.textContent = '↓ 跳到帖子';
+    jump.textContent = jumpText;
     jump.addEventListener('click', () => jumpToPostNumber(reply.post_number));
 
     main.append(head, body, jump);
     item.append(avatar, main);
     return item;
+  }
+
+  function createEmbeddedCollapse(title, onCollapse) {
+    const collapse = document.createElement('button');
+    collapse.type = 'button';
+    collapse.className = 'ld-preview-embedded-collapse';
+    collapse.textContent = '⌃';
+    collapse.title = title;
+    collapse.addEventListener('click', onCollapse);
+    return collapse;
   }
 
   function createRepliesToggle(post, article) {
@@ -2088,13 +2482,7 @@
           empty.textContent = '（回复在下方相邻楼层）';
           box.appendChild(empty);
         }
-        const collapse = document.createElement('button');
-        collapse.type = 'button';
-        collapse.className = 'ld-preview-embedded-collapse';
-        collapse.textContent = '⌃';
-        collapse.title = '收起回复';
-        collapse.addEventListener('click', () => setExpanded(false));
-        box.appendChild(collapse);
+        box.appendChild(createEmbeddedCollapse('收起回复', () => setExpanded(false)));
         article.appendChild(box);
         setExpanded(true);
       } catch {
@@ -2108,7 +2496,24 @@
     return toggle;
   }
 
-  function renderPost(post) {
+  async function fetchReplyParents(post) {
+    const response = await fetch(`/posts/${post.id}/reply-history.json`, {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    });
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data) && data.length) return data;
+    }
+    const fallback = await fetch(`/posts/by_number/${state.currentTopicId}/${post.reply_to_post_number}.json`, {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    });
+    if (!fallback.ok) throw new Error(`HTTP ${fallback.status}`);
+    return [await fallback.json()];
+  }
+
+  function renderPost(post, { treeMode = false } = {}) {
     const article = document.createElement('article');
     article.className = 'ld-preview-post';
     article.dataset.postNumber = post.post_number != null ? String(post.post_number) : '';
@@ -2143,12 +2548,12 @@
 
     header.append(avatar, author);
     appendUserBadges(header, post);
-    if (post.reply_to_post_number) {
+    if (!treeMode && post.reply_to_post_number) {
       const replyToUser = post.reply_to_user;
       const replyTo = document.createElement('button');
       replyTo.type = 'button';
       replyTo.className = 'ld-preview-reply-to';
-      replyTo.title = `回复了 #${post.reply_to_post_number}，点击跳转`;
+      replyTo.title = `回复了 #${post.reply_to_post_number}，点击展开原帖`;
       const replyToArrow = document.createElement('span');
       replyToArrow.textContent = '↪';
       replyTo.appendChild(replyToArrow);
@@ -2164,7 +2569,38 @@
       replyToName.textContent = replyToUser?.name || replyToUser?.username
         || `#${post.reply_to_post_number}`;
       replyTo.appendChild(replyToName);
-      replyTo.addEventListener('click', () => jumpToPostNumber(post.reply_to_post_number));
+
+      let parentsBox = null;
+      let parentsLoading = false;
+      const setParentsExpanded = (expanded) => {
+        if (parentsBox) parentsBox.hidden = !expanded;
+        replyTo.classList.toggle('is-open', Boolean(parentsBox) && expanded);
+      };
+      replyTo.addEventListener('click', async () => {
+        if (parentsLoading) return;
+        if (parentsBox) {
+          setParentsExpanded(parentsBox.hidden);
+          return;
+        }
+        parentsLoading = true;
+        replyToArrow.textContent = '…';
+        try {
+          const parents = await fetchReplyParents(post);
+          parentsBox = document.createElement('div');
+          parentsBox.className = 'ld-preview-embedded-replies ld-preview-embedded-parents';
+          for (const parent of parents) {
+            parentsBox.appendChild(renderEmbeddedReply(parent, '↑ 跳到原楼层'));
+          }
+          parentsBox.appendChild(createEmbeddedCollapse('收起原帖', () => setParentsExpanded(false)));
+          article.insertBefore(parentsBox, article.querySelector(':scope > .cooked'));
+          setParentsExpanded(true);
+        } catch {
+          showToast('原帖加载失败');
+        } finally {
+          parentsLoading = false;
+          replyToArrow.textContent = '↪';
+        }
+      });
       header.appendChild(replyTo);
     }
     header.appendChild(meta);
@@ -2199,7 +2635,7 @@
     replyButton.title = `回复 #${post.post_number}`;
     replyButton.addEventListener('click', () => openComposer(post.post_number, post.username || ''));
 
-    if (post.reply_count > 0) footer.appendChild(createRepliesToggle(post, article));
+    if (!treeMode && post.reply_count > 0) footer.appendChild(createRepliesToggle(post, article));
     footer.append(createBookmarkButton(post), createLikeButton(post), copyButton, moreButton, replyButton);
 
     article.append(header, body, footer);
@@ -2207,22 +2643,358 @@
     return article;
   }
 
+  function postLikeCount(post) {
+    const action = Array.isArray(post.actions_summary)
+      ? post.actions_summary.find((item) => item.id === LIKE_ACTION_ID)
+      : null;
+    return Number(action?.count ?? post.like_count ?? 0) || 0;
+  }
+
+  function treeHotScore(post, directChildren = 0) {
+    const likes = postLikeCount(post);
+    const replies = Math.max(Number(post.reply_count) || 0, directChildren);
+    // 点赞权重略高于回复；楼层号仅用作分数相同时的稳定排序依据。
+    return likes * 4 + replies * 2;
+  }
+
+  function sortTreeSiblings(posts, childrenByParent) {
+    return posts.sort((left, right) => {
+      if (state.treeSort === 'hot') {
+        const leftScore = treeHotScore(left, childrenByParent.get(Number(left.post_number))?.length || 0);
+        const rightScore = treeHotScore(right, childrenByParent.get(Number(right.post_number))?.length || 0);
+        if (leftScore !== rightScore) return rightScore - leftScore;
+      }
+      return (Number(left.post_number) || 0) - (Number(right.post_number) || 0);
+    });
+  }
+
+  async function loadTreeReplies(post) {
+    const number = Number(post.post_number) || 0;
+    if (!number || state.treeRepliesLoaded.has(number) || state.treeRepliesLoading.has(number)) return;
+    const token = state.loadToken;
+    const topicId = state.currentTopicId;
+    state.treeRepliesLoading.add(number);
+    renderTreeView({ anchorPostNumber: number });
+    try {
+      let branchReplyIds = state.treeBranchReplyIds.get(post.id);
+      if (!branchReplyIds) {
+        const response = await fetchWithBackoff(`/posts/${post.id}/reply-ids.json`, {
+          credentials: 'same-origin',
+          headers: { Accept: 'application/json' },
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (token !== state.loadToken || topicId !== state.currentTopicId) return;
+        const entries = Array.isArray(data)
+          ? data.map((item) => ({
+            id: Number(item && typeof item === 'object' ? item.id : item),
+            level: Math.max(1, Number(item && typeof item === 'object' ? item.level : 1) || 1),
+          })).filter((item) => item.id)
+          : [];
+        branchReplyIds = entries.map((entry) => entry.id);
+        state.treeBranchReplyIds.set(post.id, branchReplyIds);
+        // reply-ids 是深度优先的 { id, level } 列表。按 level 还原父子关系，
+        // 每个节点只保存它的直接回复 ID，不再把整棵子树算作该层回复。
+        const directIds = new Map([[post.id, []]]);
+        const ancestors = [post.id];
+        for (const entry of entries) {
+          const level = Math.min(entry.level, ancestors.length);
+          const parentId = ancestors[level - 1] || post.id;
+          if (!directIds.has(parentId)) directIds.set(parentId, []);
+          directIds.get(parentId).push(entry.id);
+          if (!directIds.has(entry.id)) directIds.set(entry.id, []);
+          ancestors.length = level;
+          ancestors[level] = entry.id;
+          ancestors.length = level + 1;
+        }
+        for (const [postId, ids] of directIds) {
+          state.treeDirectReplyIds.set(postId, ids);
+        }
+      }
+      if (token !== state.loadToken || topicId !== state.currentTopicId) return;
+      const directReplyIds = state.treeDirectReplyIds.get(post.id) || [];
+      if (!branchReplyIds.length && Number(post.reply_count) > 0) {
+        throw new Error('回复 ID 列表暂时为空');
+      }
+      state.treeReplyIds.set(number, directReplyIds);
+
+      // 用户点击一次后，一次请求取回这条分支的所有后代评论。
+      const missingIds = branchReplyIds.filter((id) => !state.allPosts.has(id));
+      if (missingIds.length) {
+        const replies = await fetchPostsByIds(topicId, missingIds);
+        if (token !== state.loadToken || topicId !== state.currentTopicId) return;
+        for (const reply of replies) {
+          if (reply?.id) state.allPosts.set(reply.id, reply);
+        }
+        const unresolved = missingIds.filter((id) => !state.allPosts.has(id));
+        if (unresolved.length) throw new Error(`有 ${unresolved.length} 条回复暂时不可用`);
+      }
+
+      // 整条分支已加载：建立每层的直接回复索引，并自动展开所有层级。
+      const branchPosts = [post, ...branchReplyIds.map((id) => state.allPosts.get(id)).filter(Boolean)];
+      for (const branchPost of branchPosts) {
+        const branchNumber = Number(branchPost.post_number) || 0;
+        if (!branchNumber) continue;
+        const childIds = state.treeDirectReplyIds.get(branchPost.id) || [];
+        state.treeReplyIds.set(branchNumber, childIds);
+        state.treeRepliesLoaded.add(branchNumber);
+        if (childIds.length || Number(branchPost.reply_count) > 0) {
+          state.treeExpanded.add(branchNumber);
+        }
+      }
+    } catch (error) {
+      if (token !== state.loadToken || topicId !== state.currentTopicId) return;
+      state.treeExpanded.delete(number);
+      const reason = error?.message && !/^HTTP 429$/.test(error.message)
+        ? `：${error.message}`
+        : '';
+      showToast(`#${number} 的回复加载失败${reason}，点击可重试`);
+    } finally {
+      if (token === state.loadToken && topicId === state.currentTopicId) {
+        state.treeRepliesLoading.delete(number);
+        if (state.viewMode === 'tree') renderTreeView({ anchorPostNumber: number });
+      }
+    }
+  }
+
+  function renderTreeNode(post, childrenByParent, visited) {
+    const number = Number(post.post_number) || 0;
+    if (visited.has(number)) return null;
+    visited.add(number);
+
+    const node = document.createElement('section');
+    node.className = 'ld-preview-tree-node';
+    node.dataset.postNumber = String(number);
+    const article = renderPost(post, { treeMode: true });
+    node.appendChild(article);
+
+    const children = sortTreeSiblings([...(childrenByParent.get(number) || [])], childrenByParent);
+    const repliesLoading = state.treeRepliesLoading.has(number);
+    const directReplyCount = Math.max(0, Number(post.reply_count) || 0);
+    // reply_count 为 0 的叶子节点不显示任何展开/收起控件。
+    const hasReplies = directReplyCount > 0;
+    if (hasReplies) {
+      const expanded = state.treeExpanded.has(number);
+      if (!expanded) {
+        const expandButton = document.createElement('button');
+        expandButton.type = 'button';
+        expandButton.className = 'ld-preview-tree-collapse';
+        expandButton.textContent = `＋ ${directReplyCount} 条回复`;
+        expandButton.title = `加载并展开全部 ${directReplyCount} 条直接回复及其后续对话`;
+        expandButton.setAttribute('aria-label', expandButton.title);
+        expandButton.setAttribute('aria-expanded', 'false');
+        expandButton.disabled = repliesLoading;
+        expandButton.addEventListener('click', () => {
+          state.treeExpanded.add(number);
+          if (!state.treeRepliesLoaded.has(number)) {
+            loadTreeReplies(post);
+          } else {
+            renderTreeView({ anchorPostNumber: number });
+          }
+        });
+        const footer = article.querySelector(':scope > .ld-preview-post-footer');
+        if (footer) footer.insertBefore(expandButton, footer.firstChild);
+      }
+
+      if (expanded) {
+        const collapseBranch = (event) => {
+          event.stopPropagation();
+          state.treeExpanded.delete(number);
+          renderTreeView({ anchorPostNumber: number });
+        };
+        const bindBranchControl = (control) => {
+          control.title = `收起 #${number} 的回复`;
+          control.setAttribute('aria-label', control.title);
+          control.addEventListener('click', collapseBranch);
+          control.addEventListener('pointerenter', () => node.classList.add('is-tree-rail-hovered'));
+          control.addEventListener('pointerleave', () => node.classList.remove('is-tree-rail-hovered'));
+          control.addEventListener('focus', () => node.classList.add('is-tree-rail-hovered'));
+          control.addEventListener('blur', () => node.classList.remove('is-tree-rail-hovered'));
+        };
+
+        // 父评论内部的上半段：圆形折叠点位于操作区下方，而非子树顶端。
+        const stem = document.createElement('button');
+        stem.type = 'button';
+        stem.className = 'ld-preview-tree-stem';
+        bindBranchControl(stem);
+        article.appendChild(stem);
+
+        const childBox = document.createElement('div');
+        childBox.className = 'ld-preview-tree-children';
+        const rail = document.createElement('button');
+        rail.type = 'button';
+        rail.className = 'ld-preview-tree-rail';
+        bindBranchControl(rail);
+        childBox.appendChild(rail);
+        for (const child of children) {
+          const childNode = renderTreeNode(child, childrenByParent, visited);
+          if (childNode) childBox.appendChild(childNode);
+        }
+        if (repliesLoading) {
+          const loading = document.createElement('div');
+          loading.className = 'ld-preview-embedded-empty';
+          loading.textContent = '正在加载此分支…';
+          childBox.appendChild(loading);
+        }
+        node.appendChild(childBox);
+      }
+    }
+    return node;
+  }
+
+  function renderTreeView({ preserveScroll = true, anchorPostNumber = 0 } = {}) {
+    if (!state.list) return;
+    const previousScrollTop = state.scroll.scrollTop;
+    let effectiveAnchorNumber = anchorPostNumber;
+    if (!effectiveAnchorNumber && preserveScroll) {
+      const scrollTop = state.scroll.getBoundingClientRect().top;
+      const firstVisible = [...state.list.querySelectorAll('article.ld-preview-post')]
+        .find((article) => article.getBoundingClientRect().bottom >= scrollTop + 4);
+      effectiveAnchorNumber = Number(firstVisible?.dataset.postNumber) || 0;
+    }
+    const previousAnchor = effectiveAnchorNumber
+      ? state.list.querySelector(`article[data-post-number="${effectiveAnchorNumber}"]`)
+      : null;
+    const previousAnchorTop = previousAnchor
+      ? previousAnchor.getBoundingClientRect().top - state.scroll.getBoundingClientRect().top
+      : null;
+    const posts = [...state.allPosts.values()].filter((post) => post?.post_number != null);
+    const byNumber = new Map(posts.map((post) => [Number(post.post_number), post]));
+    const childrenByParent = new Map();
+    const roots = [];
+    const op = byNumber.get(1) || null;
+
+    for (const post of posts) {
+      const number = Number(post.post_number);
+      if (number === 1) continue;
+      const parentNumber = Number(post.reply_to_post_number) || 0;
+      if (parentNumber && parentNumber !== number && byNumber.has(parentNumber)) {
+        if (!childrenByParent.has(parentNumber)) childrenByParent.set(parentNumber, []);
+        childrenByParent.get(parentNumber).push(post);
+      } else {
+        // 父评论尚未加载、已删除或不可见时，先作为顶层节点显示，
+        // 避免该评论因无法挂载到本地父节点而从树中消失。
+        roots.push(post);
+      }
+    }
+
+    // Discourse 中回复主题首帖的帖子属于顶层评论，不额外缩进一层。
+    if (op && childrenByParent.has(1)) roots.push(...childrenByParent.get(1));
+    const rootPosts = sortTreeSiblings(roots, childrenByParent);
+    const fragment = document.createDocumentFragment();
+    const visited = new Set();
+
+    if (op) {
+      visited.add(1);
+      const opWrap = document.createElement('div');
+      opWrap.className = 'ld-preview-tree-op';
+      opWrap.appendChild(renderPost(op, { treeMode: true }));
+      fragment.appendChild(opWrap);
+    }
+    for (const post of rootPosts) {
+      const node = renderTreeNode(post, childrenByParent, visited);
+      if (node) fragment.appendChild(node);
+    }
+    state.list.textContent = '';
+    if (posts.length) state.list.appendChild(fragment);
+    else {
+      const empty = document.createElement('div');
+      empty.className = 'ld-preview-tree-empty';
+      empty.textContent = '暂无评论';
+      state.list.appendChild(empty);
+    }
+    state.loadedIds = new Set(posts.map((post) => post.id));
+    const loadedStreamCount = state.stream.reduce(
+      (count, id) => count + (state.allPosts.has(id) ? 1 : 0),
+      0,
+    );
+    if (state.viewNote) state.viewNote.textContent = `按需加载 ${loadedStreamCount}/${state.stream.length} 楼`;
+    if (previousAnchorTop != null) {
+      const nextAnchor = state.list.querySelector(`article[data-post-number="${effectiveAnchorNumber}"]`);
+      if (nextAnchor) {
+        const nextAnchorTop = nextAnchor.getBoundingClientRect().top - state.scroll.getBoundingClientRect().top;
+        state.scroll.scrollTop += nextAnchorTop - previousAnchorTop;
+      }
+    } else if (preserveScroll) {
+      state.scroll.scrollTop = previousScrollTop;
+    }
+  }
+
+  function renderOriginalView() {
+    let contiguousEnd = -1;
+    while (contiguousEnd + 1 < state.stream.length
+      && state.allPosts.has(state.stream[contiguousEnd + 1])) contiguousEnd += 1;
+    const posts = state.stream
+      .slice(0, contiguousEnd + 1)
+      .map((id) => state.allPosts.get(id))
+      .filter(Boolean);
+    state.list.textContent = '';
+    state.loadedIds = new Set();
+    state.startIdx = 0;
+    state.endIdx = contiguousEnd;
+    appendPosts(posts);
+    updateSentinels();
+    state.scroll.scrollTop = 0;
+    updateTimelinePosition(0, state.stream.length);
+  }
+
+  function updateViewUi() {
+    const isTree = state.viewMode === 'tree';
+    state.panel?.classList.toggle('is-tree-view', isTree);
+    if (state.viewBar) state.viewBar.hidden = !isTree;
+    if (state.treeButton) {
+      state.treeButton.textContent = isTree ? '▤' : '🌳';
+      state.treeButton.title = isTree ? '切换到原始视图' : '切换到树状评论';
+      state.treeButton.setAttribute('aria-label', state.treeButton.title);
+    }
+  }
+
+  async function setViewMode(mode, { persist = true } = {}) {
+    const nextMode = mode === 'tree' ? 'tree' : 'original';
+    state.viewMode = nextMode;
+    if (persist) localStorage.setItem(VIEW_KEY, nextMode);
+    updateViewUi();
+    if (!state.currentTopicId || !state.stream.length) return;
+
+    if (nextMode === 'tree') {
+      let contiguousEnd = -1;
+      while (contiguousEnd + 1 < state.stream.length
+        && state.allPosts.has(state.stream[contiguousEnd + 1])) contiguousEnd += 1;
+      state.startIdx = 0;
+      state.endIdx = contiguousEnd;
+      renderTreeView({ preserveScroll: false });
+      updateSentinels();
+      state.scroll.scrollTop = 0;
+    } else {
+      renderOriginalView();
+    }
+  }
+
   function appendPosts(posts) {
     const fragment = document.createDocumentFragment();
     for (const post of posts) {
-      if (!post || state.loadedIds.has(post.id)) continue;
+      if (!post) continue;
+      state.allPosts.set(post.id, post);
+      if (state.loadedIds.has(post.id)) continue;
       state.loadedIds.add(post.id);
-      fragment.appendChild(renderPost(post));
+      if (state.viewMode !== 'tree') fragment.appendChild(renderPost(post));
     }
-    state.list.appendChild(fragment);
+    if (state.viewMode === 'tree') renderTreeView();
+    else state.list.appendChild(fragment);
   }
 
   function prependPosts(posts) {
     const fragment = document.createDocumentFragment();
     for (const post of posts) {
-      if (!post || state.loadedIds.has(post.id)) continue;
+      if (!post) continue;
+      state.allPosts.set(post.id, post);
+      if (state.loadedIds.has(post.id)) continue;
       state.loadedIds.add(post.id);
-      fragment.appendChild(renderPost(post));
+      if (state.viewMode !== 'tree') fragment.appendChild(renderPost(post));
+    }
+    if (state.viewMode === 'tree') {
+      renderTreeView();
+      return;
     }
     const previousHeight = state.scroll.scrollHeight;
     state.list.insertBefore(fragment, state.list.firstChild);
@@ -2230,6 +3002,13 @@
   }
 
   function updateSentinels() {
+    if (state.viewMode === 'tree') {
+      state.topSentinel.hidden = true;
+      state.topSentinel.textContent = '';
+      state.sentinel.hidden = state.endIdx >= state.stream.length - 1;
+      state.sentinel.textContent = state.sentinel.hidden ? '' : '继续滚动，按需加载更多评论…';
+      return;
+    }
     const total = state.stream.length;
     state.sentinel.hidden = state.endIdx >= total - 1;
     if (state.sentinel.hidden) state.sentinel.textContent = '';
@@ -2284,7 +3063,7 @@
 
     let best = null;
     let bestDiff = Infinity;
-    for (const article of state.list.children) {
+    for (const article of state.list.querySelectorAll('article.ld-preview-post')) {
       const number = Number(article.dataset.postNumber);
       if (!number) continue;
       const diff = Math.abs(number - postNumber);
@@ -2300,10 +3079,10 @@
   }
 
   function syncTimelineToScroll() {
-    if (state.timelineDragging || !state.stream.length) return;
+    if (state.viewMode === 'tree' || state.timelineDragging || !state.stream.length) return;
     const viewTop = state.scroll.getBoundingClientRect().top;
     let currentIndex = state.currentIdx;
-    for (const article of state.list.children) {
+    for (const article of state.list.querySelectorAll('article.ld-preview-post')) {
       const rect = article.getBoundingClientRect();
       if (rect.bottom >= viewTop + 20) {
         const index = state.streamIndex.get(Number(article.dataset.postId));
@@ -2327,10 +3106,28 @@
     updateTimelinePosition(index, state.stream.length);
   }
 
+  async function fetchWithBackoff(path, options, maxRetries = 2) {
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await fetch(path, options);
+      if (response.status !== 429 || attempt >= maxRetries) return response;
+
+      const retryAfter = response.headers.get('Retry-After');
+      let waitMs = Number(retryAfter) * 1000;
+      if (!Number.isFinite(waitMs) || waitMs <= 0) {
+        const retryDate = Date.parse(retryAfter || '');
+        waitMs = Number.isFinite(retryDate) ? retryDate - Date.now() : 0;
+      }
+      if (!Number.isFinite(waitMs) || waitMs <= 0) waitMs = 1500 * (2 ** attempt);
+      waitMs = Math.min(Math.max(waitMs, 1000), 10000);
+      showToast(`请求较频繁，${Math.ceil(waitMs / 1000)} 秒后自动重试`);
+      await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+    }
+  }
+
   async function fetchPostsByIds(topicId, ids) {
     const params = new URLSearchParams();
     for (const id of ids) params.append('post_ids[]', id);
-    const response = await fetch(`/t/${topicId}/posts.json?${params}`, {
+    const response = await fetchWithBackoff(`/t/${topicId}/posts.json?${params}`, {
       credentials: 'same-origin',
       headers: { Accept: 'application/json' },
     });
@@ -2343,6 +3140,19 @@
     const total = state.stream.length;
     if (!total || !state.currentTopicId) return;
     const target = Math.min(Math.max(index, 0), total - 1);
+
+    if (state.viewMode === 'tree') {
+      const id = state.stream[target];
+      const article = state.list.querySelector(`article[data-post-id="${id}"]`);
+      if (article) {
+        const articleRect = article.getBoundingClientRect();
+        const scrollRect = state.scroll.getBoundingClientRect();
+        state.scroll.scrollTop += articleRect.top - scrollRect.top - 8;
+        state.currentIdx = target;
+        updateTimelinePosition(target, total);
+      }
+      return;
+    }
 
     if (target >= state.startIdx && target <= state.endIdx) {
       scrollToStreamIndex(target);
@@ -2378,6 +3188,13 @@
     state.stream = data.post_stream?.stream || [];
     state.streamIndex = new Map(state.stream.map((id, index) => [id, index]));
     state.loadedIds = new Set();
+    state.allPosts = new Map(posts.filter(Boolean).map((post) => [post.id, post]));
+    state.treeExpanded = new Set();
+    state.treeRepliesLoaded = new Set();
+    state.treeRepliesLoading = new Set();
+    state.treeReplyIds = new Map();
+    state.treeDirectReplyIds = new Map();
+    state.treeBranchReplyIds = new Map();
     state.loadingMore = false;
     state.loadingBefore = false;
     state.startIdx = 0;
@@ -2413,8 +3230,10 @@
     hideNotifMenu();
     updateNotifButton();
     state.panel.classList.toggle('has-timeline', state.stream.length > 1);
+    updateViewUi();
     updateTimelinePosition(0, state.stream.length);
     state.scroll.scrollTop = 0;
+    if (state.viewMode === 'tree') setViewMode('tree', { persist: false });
   }
 
   function unsubscribeLiveUpdates() {
@@ -2484,7 +3303,9 @@
       setStatus('');
       renderTopic(data, topicUrl);
       const floor = floorFromUrl(topicUrl);
-      if (floor > 1) {
+      if (state.viewMode === 'tree') {
+        // 树状视图按分支或热度排列，不自动套用原始时间线的续读位置。
+      } else if (floor > 1) {
         jumpToIndex(Math.min(floor - 1, state.stream.length - 1));
       } else {
         const lastRead = state.topicMeta.lastReadPostNumber || 0;
@@ -2560,7 +3381,7 @@
     let sawVisible = false;
     let maxVisibleNumber = 0;
     let minVisibleNumber = Infinity;
-    for (const article of state.list.children) {
+    for (const article of state.list.querySelectorAll('article.ld-preview-post')) {
       const postNumber = article.dataset?.postNumber;
       if (!postNumber) continue;
       const rect = article.getBoundingClientRect();
@@ -2576,7 +3397,8 @@
       // jumping elsewhere via the timeline must leave the back target fixed.
       if (state.topicMeta) {
         const lastRead = state.topicMeta.lastReadPostNumber || 0;
-        if (maxVisibleNumber > lastRead && minVisibleNumber <= lastRead + 3) {
+        if (state.viewMode !== 'tree'
+          && maxVisibleNumber > lastRead && minVisibleNumber <= lastRead + 3) {
           state.topicMeta.lastReadPostNumber = maxVisibleNumber;
           localLastRead.set(String(state.currentTopicId), maxVisibleNumber);
           updateBackButton();
@@ -2865,6 +3687,7 @@
     const topicId = topicIdFromUrl(normalizedUrl);
     if (!topicId) return;
     ensurePanel();
+    updatePanelTop();
 
     if (!state.open) {
       state.open = true;
@@ -3044,6 +3867,7 @@
     window.addEventListener('click', handleTopicClick, true);
     window.addEventListener('pointerover', handleTopicPointerOver, true);
     window.addEventListener('pointerout', handleTopicPointerOut, true);
+    window.addEventListener('resize', updatePanelTop);
     window.addEventListener('popstate', handleHistoryChange);
     window.addEventListener('click', (event) => {
       if (!state.notifMenu || state.notifMenu.hidden) return;
