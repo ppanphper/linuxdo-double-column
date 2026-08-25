@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.13.6
+// @version      0.13.7
 // @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
@@ -33,6 +33,8 @@
   const LIKE_ACTION_ID = 2;
   const TIMINGS_TICK_MS = 1000;
   const TIMINGS_FLUSH_MS = 20000;
+  const LIGHTBOX_MIN_SCALE = 0.5;
+  const LIGHTBOX_MAX_SCALE = 5;
   const NOTIFICATION_LEVELS = [
     { level: 3, name: '关注', desc: '此话题有新回复就通知' },
     { level: 2, name: '跟踪', desc: '显示新回复数量' },
@@ -73,7 +75,23 @@
     composerPreviewTimer: null,
     pendingUploads: 0,
     lightbox: null,
+    lightboxStage: null,
     lightboxImg: null,
+    lightboxPrev: null,
+    lightboxNext: null,
+    lightboxCounter: null,
+    lightboxClose: null,
+    lightboxImages: [],
+    lightboxIndex: -1,
+    lightboxScale: 1,
+    lightboxX: 0,
+    lightboxY: 0,
+    lightboxPointerId: null,
+    lightboxDragStartX: 0,
+    lightboxDragStartY: 0,
+    lightboxDragOriginX: 0,
+    lightboxDragOriginY: 0,
+    lightboxReturnFocus: null,
     liveChannel: '',
     liveHandler: null,
     replyToNumber: null,
@@ -968,22 +986,143 @@
         z-index: 2147483100;
         inset: 0;
         display: none;
-        place-items: center;
-        padding: 24px;
+        overflow: hidden;
         background: rgba(0, 0, 0, 0.88);
-        cursor: zoom-out;
+        color: #ffffff;
+        user-select: none;
       }
 
       #ld-preview-lightbox.is-open {
-        display: grid;
+        display: block;
       }
 
-      #ld-preview-lightbox img {
-        max-width: calc(100vw - 48px);
-        max-height: calc(100vh - 48px);
+      #ld-preview-lightbox .ld-preview-lightbox-stage {
+        position: absolute;
+        inset: 24px;
+        display: grid;
+        overflow: hidden;
+        place-items: center;
+        cursor: zoom-out;
+      }
+
+      #ld-preview-lightbox .ld-preview-lightbox-image {
+        max-width: 100%;
+        max-height: 100%;
         object-fit: contain;
         border-radius: 4px;
         box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        cursor: zoom-in;
+        touch-action: none;
+        transform-origin: center;
+        will-change: transform;
+      }
+
+      #ld-preview-lightbox.is-zoomed .ld-preview-lightbox-image {
+        cursor: grab;
+      }
+
+      #ld-preview-lightbox.is-dragging .ld-preview-lightbox-image {
+        cursor: grabbing;
+      }
+
+      #ld-preview-lightbox .ld-preview-lightbox-button {
+        position: absolute;
+        z-index: 1;
+        display: grid;
+        width: 44px;
+        height: 52px;
+        place-items: center;
+        padding: 0;
+        color: #ffffff;
+        background: rgba(20, 20, 20, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        border-radius: 4px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 34px;
+        line-height: 1;
+      }
+
+      #ld-preview-lightbox .ld-preview-lightbox-button:hover:not(:disabled),
+      #ld-preview-lightbox .ld-preview-lightbox-button:focus-visible {
+        background: rgba(60, 60, 60, 0.9);
+        border-color: rgba(255, 255, 255, 0.75);
+        outline: none;
+      }
+
+      #ld-preview-lightbox .ld-preview-lightbox-button:disabled {
+        cursor: default;
+        opacity: 0.25;
+      }
+
+      #ld-preview-lightbox .ld-preview-lightbox-prev,
+      #ld-preview-lightbox .ld-preview-lightbox-next {
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      #ld-preview-lightbox .ld-preview-lightbox-prev {
+        left: 16px;
+      }
+
+      #ld-preview-lightbox .ld-preview-lightbox-next {
+        right: 16px;
+      }
+
+      #ld-preview-lightbox .ld-preview-lightbox-close {
+        top: 14px;
+        right: 16px;
+        width: 40px;
+        height: 40px;
+        font-size: 28px;
+      }
+
+      #ld-preview-lightbox .ld-preview-lightbox-counter {
+        position: absolute;
+        z-index: 1;
+        top: 14px;
+        left: 50%;
+        min-width: 92px;
+        padding: 7px 10px;
+        background: rgba(20, 20, 20, 0.72);
+        border-radius: 4px;
+        font-size: 13px;
+        line-height: 1.2;
+        text-align: center;
+        transform: translateX(-50%);
+      }
+
+      #ld-preview-lightbox [hidden] {
+        display: none !important;
+      }
+
+      @media (max-width: 600px) {
+        #ld-preview-lightbox .ld-preview-lightbox-stage {
+          inset: 12px;
+        }
+
+        #ld-preview-lightbox .ld-preview-lightbox-button {
+          width: 40px;
+          height: 48px;
+        }
+
+        #ld-preview-lightbox .ld-preview-lightbox-prev {
+          left: 8px;
+        }
+
+        #ld-preview-lightbox .ld-preview-lightbox-next {
+          right: 8px;
+        }
+
+        #ld-preview-lightbox .ld-preview-lightbox-close {
+          top: 8px;
+          right: 8px;
+          height: 40px;
+        }
+
+        #ld-preview-lightbox .ld-preview-lightbox-counter {
+          top: 8px;
+        }
       }
 
       #${PANEL_ID} .ld-preview-post .cooked pre {
@@ -3750,26 +3889,247 @@
     if (state.lightbox) return;
     const overlay = document.createElement('div');
     overlay.id = 'ld-preview-lightbox';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', '图片预览');
+
+    const stage = document.createElement('div');
+    stage.className = 'ld-preview-lightbox-stage';
+
     const img = document.createElement('img');
+    img.className = 'ld-preview-lightbox-image';
     img.alt = '';
-    overlay.appendChild(img);
-    overlay.addEventListener('click', closeLightbox);
+    img.draggable = false;
+    img.addEventListener('load', () => {
+      clampLightboxPan();
+      updateLightboxTransform();
+    });
+    img.addEventListener('pointerdown', handleLightboxPointerDown);
+    img.addEventListener('pointermove', handleLightboxPointerMove);
+    img.addEventListener('pointerup', finishLightboxDrag);
+    img.addEventListener('pointercancel', finishLightboxDrag);
+    stage.appendChild(img);
+
+    const createLightboxButton = (className, label, title, handler) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `ld-preview-lightbox-button ${className}`;
+      button.textContent = label;
+      button.title = title;
+      button.setAttribute('aria-label', title);
+      button.addEventListener('click', handler);
+      return button;
+    };
+    const prev = createLightboxButton(
+      'ld-preview-lightbox-prev',
+      '‹',
+      '上一张（←）',
+      () => showLightboxImage(state.lightboxIndex - 1),
+    );
+    const next = createLightboxButton(
+      'ld-preview-lightbox-next',
+      '›',
+      '下一张（→）',
+      () => showLightboxImage(state.lightboxIndex + 1),
+    );
+    const close = createLightboxButton(
+      'ld-preview-lightbox-close',
+      '×',
+      '关闭图片预览（Esc）',
+      closeLightbox,
+    );
+    const counter = document.createElement('div');
+    counter.className = 'ld-preview-lightbox-counter';
+    counter.setAttribute('aria-live', 'polite');
+
+    overlay.append(stage, prev, next, counter, close);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay || event.target === stage) closeLightbox();
+    });
+    overlay.addEventListener('wheel', handleLightboxWheel, { passive: false });
     document.body.appendChild(overlay);
     state.lightbox = overlay;
+    state.lightboxStage = stage;
     state.lightboxImg = img;
+    state.lightboxPrev = prev;
+    state.lightboxNext = next;
+    state.lightboxCounter = counter;
+    state.lightboxClose = close;
   }
 
-  function openLightbox(src) {
-    if (!src) return;
+  function getLightboxSource(image) {
+    const lightboxLink = image.closest('a.lightbox[href]');
+    return lightboxLink?.href || image.currentSrc || image.src || '';
+  }
+
+  function collectLightboxImages(activeImage) {
+    const images = Array.from(state.list?.querySelectorAll('.cooked img:not(.emoji)') || [])
+      .filter((image) => {
+        const link = image.closest('a');
+        return image.getClientRects().length > 0 && (!link || link.classList.contains('lightbox'));
+      })
+      .map((image) => ({
+        element: image,
+        src: getLightboxSource(image),
+        alt: image.alt || '',
+      }))
+      .filter((item) => item.src);
+    const index = images.findIndex((item) => item.element === activeImage);
+    if (index >= 0) return { images, index };
+    const src = getLightboxSource(activeImage);
+    return src
+      ? { images: [{ element: activeImage, src, alt: activeImage.alt || '' }], index: 0 }
+      : { images: [], index: -1 };
+  }
+
+  function updateLightboxControls() {
+    const count = state.lightboxImages.length;
+    const hasMultiple = count > 1;
+    if (state.lightboxPrev) {
+      state.lightboxPrev.hidden = !hasMultiple;
+      state.lightboxPrev.disabled = state.lightboxIndex <= 0;
+    }
+    if (state.lightboxNext) {
+      state.lightboxNext.hidden = !hasMultiple;
+      state.lightboxNext.disabled = state.lightboxIndex >= count - 1;
+    }
+    if (state.lightboxCounter) {
+      state.lightboxCounter.textContent = count
+        ? `${state.lightboxIndex + 1} / ${count} · ${Math.round(state.lightboxScale * 100)}%`
+        : '';
+    }
+  }
+
+  function updateLightboxTransform() {
+    if (!state.lightboxImg) return;
+    state.lightboxImg.style.transform = `translate3d(${state.lightboxX}px, ${state.lightboxY}px, 0) scale(${state.lightboxScale})`;
+    state.lightbox?.classList.toggle('is-zoomed', state.lightboxScale > 1);
+    updateLightboxControls();
+  }
+
+  function clampLightboxPan() {
+    if (!state.lightboxImg || !state.lightboxStage || state.lightboxScale <= 1) {
+      state.lightboxX = 0;
+      state.lightboxY = 0;
+      return;
+    }
+    const maxX = Math.max(
+      0,
+      (state.lightboxImg.offsetWidth * state.lightboxScale - state.lightboxStage.clientWidth) / 2,
+    );
+    const maxY = Math.max(
+      0,
+      (state.lightboxImg.offsetHeight * state.lightboxScale - state.lightboxStage.clientHeight) / 2,
+    );
+    state.lightboxX = Math.max(-maxX, Math.min(maxX, state.lightboxX));
+    state.lightboxY = Math.max(-maxY, Math.min(maxY, state.lightboxY));
+  }
+
+  function resetLightboxTransform() {
+    finishLightboxDrag();
+    state.lightboxScale = 1;
+    state.lightboxX = 0;
+    state.lightboxY = 0;
+    updateLightboxTransform();
+  }
+
+  function showLightboxImage(index) {
+    if (index < 0 || index >= state.lightboxImages.length || !state.lightboxImg) return;
+    state.lightboxIndex = index;
+    resetLightboxTransform();
+    const item = state.lightboxImages[index];
+    state.lightboxImg.alt = item.alt;
+    state.lightboxImg.src = item.src;
+    updateLightboxControls();
+  }
+
+  function handleLightboxWheel(event) {
+    if (!state.lightbox?.classList.contains('is-open') || !state.lightboxStage) return;
+    event.preventDefault();
+    const deltaMultiplier = event.deltaMode === 1
+      ? 16
+      : event.deltaMode === 2 ? state.lightboxStage.clientHeight : 1;
+    const factor = Math.exp(-event.deltaY * deltaMultiplier * 0.0015);
+    const previousScale = state.lightboxScale;
+    const nextScale = Math.min(
+      LIGHTBOX_MAX_SCALE,
+      Math.max(LIGHTBOX_MIN_SCALE, previousScale * factor),
+    );
+    if (Math.abs(nextScale - previousScale) < 0.001) return;
+
+    const stageRect = state.lightboxStage.getBoundingClientRect();
+    const cursorX = event.clientX - (stageRect.left + stageRect.width / 2);
+    const cursorY = event.clientY - (stageRect.top + stageRect.height / 2);
+    state.lightboxX = cursorX - (cursorX - state.lightboxX) * (nextScale / previousScale);
+    state.lightboxY = cursorY - (cursorY - state.lightboxY) * (nextScale / previousScale);
+    state.lightboxScale = nextScale;
+    clampLightboxPan();
+    updateLightboxTransform();
+  }
+
+  function handleLightboxPointerDown(event) {
+    if (event.button !== 0 || state.lightboxScale <= 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    state.lightboxPointerId = event.pointerId;
+    state.lightboxDragStartX = event.clientX;
+    state.lightboxDragStartY = event.clientY;
+    state.lightboxDragOriginX = state.lightboxX;
+    state.lightboxDragOriginY = state.lightboxY;
+    state.lightboxImg.setPointerCapture(event.pointerId);
+    state.lightbox?.classList.add('is-dragging');
+  }
+
+  function handleLightboxPointerMove(event) {
+    if (event.pointerId !== state.lightboxPointerId) return;
+    event.preventDefault();
+    state.lightboxX = state.lightboxDragOriginX + event.clientX - state.lightboxDragStartX;
+    state.lightboxY = state.lightboxDragOriginY + event.clientY - state.lightboxDragStartY;
+    clampLightboxPan();
+    updateLightboxTransform();
+  }
+
+  function finishLightboxDrag(event) {
+    if (state.lightboxPointerId == null) return;
+    if (event && event.pointerId !== state.lightboxPointerId) return;
+    if (state.lightboxImg?.hasPointerCapture(state.lightboxPointerId)) {
+      state.lightboxImg.releasePointerCapture(state.lightboxPointerId);
+    }
+    state.lightboxPointerId = null;
+    state.lightbox?.classList.remove('is-dragging');
+  }
+
+  function openLightbox(image) {
+    if (!image) return;
+    const collection = collectLightboxImages(image);
+    if (!collection.images.length) return;
     ensureLightbox();
-    state.lightboxImg.src = src;
+    state.lightboxImages = collection.images;
+    state.lightboxReturnFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
     state.lightbox.classList.add('is-open');
+    showLightboxImage(collection.index);
+    state.lightboxClose.focus({ preventScroll: true });
   }
 
   function closeLightbox() {
     if (!state.lightbox) return;
+    const returnFocus = state.lightboxReturnFocus;
+    finishLightboxDrag();
     state.lightbox.classList.remove('is-open');
-    state.lightboxImg.src = '';
+    state.lightbox.classList.remove('is-zoomed', 'is-dragging');
+    state.lightboxImg.removeAttribute('src');
+    state.lightboxImg.alt = '';
+    state.lightboxImg.style.transform = '';
+    state.lightboxImages = [];
+    state.lightboxIndex = -1;
+    state.lightboxScale = 1;
+    state.lightboxX = 0;
+    state.lightboxY = 0;
+    state.lightboxReturnFocus = null;
+    updateLightboxControls();
+    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
   }
 
   function handlePanelClick(event) {
@@ -3782,7 +4142,7 @@
       if (!imageLink || imageLink.classList.contains('lightbox')) {
         event.preventDefault();
         event.stopPropagation();
-        openLightbox(imageLink?.href || image.currentSrc || image.src);
+        openLightbox(image);
         return;
       }
     }
@@ -3879,11 +4239,16 @@
     });
     window.addEventListener('pagehide', () => flushReadTimings());
     window.addEventListener('keydown', (event) => {
-      if (event.key !== 'Escape') return;
       if (state.lightbox?.classList.contains('is-open')) {
-        closeLightbox();
+        if (event.key === 'Escape') closeLightbox();
+        else if (event.key === 'ArrowLeft') showLightboxImage(state.lightboxIndex - 1);
+        else if (event.key === 'ArrowRight') showLightboxImage(state.lightboxIndex + 1);
+        else return;
+        event.preventDefault();
+        event.stopPropagation();
         return;
       }
+      if (event.key !== 'Escape') return;
       if (!state.open) return;
       if (state.composer && !state.composer.hidden) closeComposer(false);
       else closePanel();
