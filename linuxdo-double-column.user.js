@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.13.7
+// @version      0.14.0
 // @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
@@ -57,6 +57,12 @@
     currentPostNumber: 0,
     notifMenu: null,
     notifButton: null,
+    postMenu: null,
+    postMenuButton: null,
+    postFilter: null,
+    postFilterLoading: false,
+    postFilterToken: 0,
+    postFilterRestoreIndex: 0,
     timelineDragging: false,
     observer: null,
     title: null,
@@ -1340,6 +1346,107 @@
         opacity: 0.6;
       }
 
+      #${PANEL_ID} .ld-preview-post-more-wrap {
+        position: relative;
+        display: inline-flex;
+      }
+
+      #${PANEL_ID} .ld-preview-post-menu {
+        position: absolute;
+        right: 0;
+        bottom: calc(100% + 4px);
+        z-index: 6;
+        display: flex;
+        width: max-content;
+        min-width: 168px;
+        max-width: min(260px, calc(100vw - 24px));
+        flex-direction: column;
+        padding: 4px;
+        background: var(--secondary, #ffffff);
+        border: 1px solid var(--primary-low, #d7d7d7);
+        border-radius: 6px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+      }
+
+      #${PANEL_ID} .ld-preview-post-menu[hidden] {
+        display: none;
+      }
+
+      #${PANEL_ID} .ld-preview-post-menu.opens-down {
+        top: calc(100% + 4px);
+        bottom: auto;
+      }
+
+      #${PANEL_ID} .ld-preview-post-menu-option {
+        overflow: hidden;
+        padding: 7px 10px;
+        color: var(--primary, #202124);
+        background: transparent;
+        border: 0;
+        border-radius: 4px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 13px;
+        line-height: 1.35;
+        text-align: left;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #${PANEL_ID} .ld-preview-post-menu-option:hover:not(:disabled),
+      #${PANEL_ID} .ld-preview-post-menu-option:focus-visible {
+        background: var(--primary-low, #e9e9e9);
+        outline: none;
+      }
+
+      #${PANEL_ID} .ld-preview-post-menu-option:disabled {
+        cursor: default;
+        opacity: 0.65;
+      }
+
+      #${PANEL_ID} .ld-preview-post-menu-separator {
+        height: 1px;
+        margin: 4px 6px;
+        background: var(--primary-low, #d7d7d7);
+      }
+
+      #${PANEL_ID} .ld-preview-filter-banner {
+        display: flex;
+        min-height: 34px;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 12px;
+        color: var(--primary, #202124);
+        background: var(--primary-very-low, #f5f5f5);
+        border-bottom: 1px solid var(--primary-low, #d7d7d7);
+        font-size: 13px;
+      }
+
+      #${PANEL_ID} .ld-preview-filter-label {
+        overflow: hidden;
+        flex: 1;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #${PANEL_ID} .ld-preview-filter-clear {
+        flex-shrink: 0;
+        padding: 3px 7px;
+        color: var(--tertiary, #0088cc);
+        background: transparent;
+        border: 0;
+        border-radius: 4px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 13px;
+      }
+
+      #${PANEL_ID} .ld-preview-filter-clear:hover,
+      #${PANEL_ID} .ld-preview-filter-clear:focus-visible {
+        background: var(--primary-low, #e9e9e9);
+        outline: none;
+      }
+
       #${PANEL_ID} .ld-preview-like.is-liked {
         color: var(--love, #fa6c8d);
       }
@@ -2363,6 +2470,134 @@
     menu.hidden = false;
   }
 
+  function hidePostMenu() {
+    if (state.postMenu) state.postMenu.hidden = true;
+    if (state.postMenuButton) state.postMenuButton.setAttribute('aria-expanded', 'false');
+    state.postMenu = null;
+    state.postMenuButton = null;
+  }
+
+  function togglePostMenu(menu, button) {
+    const wasOpen = state.postMenu === menu && !menu.hidden;
+    hidePostMenu();
+    if (wasOpen) return;
+    hideNotifMenu();
+    state.postMenu = menu;
+    state.postMenuButton = button;
+    menu.classList.remove('opens-down');
+    menu.hidden = false;
+    const buttonRect = button.getBoundingClientRect();
+    const scrollRect = state.scroll?.getBoundingClientRect();
+    if (scrollRect) {
+      const spaceAbove = buttonRect.top - scrollRect.top - 6;
+      const spaceBelow = scrollRect.bottom - buttonRect.bottom - 6;
+      menu.classList.toggle('opens-down', spaceAbove < menu.offsetHeight && spaceBelow > spaceAbove);
+    }
+    button.setAttribute('aria-expanded', 'true');
+  }
+
+  function postFilterLabel(filter = state.postFilter) {
+    if (!filter) return '';
+    return filter.kind === 'owner'
+      ? '只看楼主'
+      : `只看 @${filter.username || '该用户'}`;
+  }
+
+  function matchesPostFilter(post, filter = state.postFilter) {
+    if (!filter || !post) return true;
+    if (filter.userId && post.user_id) return Number(post.user_id) === Number(filter.userId);
+    return Boolean(filter.username)
+      && String(post.username || '').toLowerCase() === filter.username.toLowerCase();
+  }
+
+  function samePostFilter(filter) {
+    if (!state.postFilter || !filter) return false;
+    if (state.postFilter.userId && filter.userId) {
+      return Number(state.postFilter.userId) === Number(filter.userId);
+    }
+    return Boolean(state.postFilter.username && filter.username)
+      && state.postFilter.username.toLowerCase() === filter.username.toLowerCase();
+  }
+
+  function createPostMenu(post, moreButton) {
+    const wrap = document.createElement('span');
+    wrap.className = 'ld-preview-post-more-wrap';
+    const menu = document.createElement('div');
+    menu.className = 'ld-preview-post-menu';
+    menu.setAttribute('role', 'menu');
+    menu.hidden = true;
+
+    const addOption = (label, handler, { disabled = false, title = '' } = {}) => {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'ld-preview-post-menu-option';
+      option.textContent = label;
+      option.title = title;
+      option.disabled = disabled;
+      option.setAttribute('role', 'menuitem');
+      option.addEventListener('click', () => {
+        hidePostMenu();
+        handler();
+      });
+      menu.appendChild(option);
+    };
+
+    if (state.postFilter) addOption('显示全部评论', clearPostFilter);
+
+    const ownerFilter = {
+      kind: 'owner',
+      userId: state.topicMeta?.ownerId || 0,
+      username: state.topicMeta?.ownerUsername || '',
+    };
+    if (ownerFilter.userId || ownerFilter.username) {
+      const active = samePostFilter(ownerFilter);
+      addOption(active ? '✓ 只看楼主' : '只看楼主', () => applyPostFilter(ownerFilter), {
+        disabled: active,
+      });
+    }
+
+    const userFilter = {
+      kind: 'user',
+      userId: post.user_id || 0,
+      username: post.username || '',
+    };
+    const isOwner = ownerFilter.userId && userFilter.userId
+      ? Number(ownerFilter.userId) === Number(userFilter.userId)
+      : ownerFilter.username && userFilter.username
+        && ownerFilter.username.toLowerCase() === userFilter.username.toLowerCase();
+    if ((userFilter.userId || userFilter.username) && !isOwner) {
+      const active = samePostFilter(userFilter);
+      const username = userFilter.username || post.name || '该用户';
+      addOption(active ? `✓ 只看 @${username}` : `只看 @${username}`, () => applyPostFilter(userFilter), {
+        disabled: active,
+        title: `只看 ${username} 的评论`,
+      });
+    }
+
+    const separator = document.createElement('div');
+    separator.className = 'ld-preview-post-menu-separator';
+    separator.setAttribute('role', 'separator');
+    menu.appendChild(separator);
+    addOption('在原页面打开', () => {
+      window.open(
+        `${location.origin}/t/topic/${state.currentTopicId}/${post.post_number}`,
+        '_blank',
+        'noopener,noreferrer',
+      );
+    });
+
+    moreButton.title = '更多操作';
+    moreButton.setAttribute('aria-label', '更多操作');
+    moreButton.setAttribute('aria-haspopup', 'menu');
+    moreButton.setAttribute('aria-expanded', 'false');
+    moreButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      togglePostMenu(menu, moreButton);
+    });
+    wrap.append(moreButton, menu);
+    return wrap;
+  }
+
   async function setNotificationLevel(level, name) {
     hideNotifMenu();
     if (!state.currentTopicId) return;
@@ -2762,10 +2997,7 @@
     moreButton.type = 'button';
     moreButton.className = 'ld-preview-post-action';
     moreButton.textContent = '⋯';
-    moreButton.title = '更多操作（在原页面打开）';
-    moreButton.addEventListener('click', () => {
-      window.open(`${location.origin}/t/topic/${state.currentTopicId}/${post.post_number}`, '_blank', 'noopener,noreferrer');
-    });
+    const moreWrap = createPostMenu(post, moreButton);
 
     const replyButton = document.createElement('button');
     replyButton.type = 'button';
@@ -2775,7 +3007,7 @@
     replyButton.addEventListener('click', () => openComposer(post.post_number, post.username || ''));
 
     if (!treeMode && post.reply_count > 0) footer.appendChild(createRepliesToggle(post, article));
-    footer.append(createBookmarkButton(post), createLikeButton(post), copyButton, moreButton, replyButton);
+    footer.append(createBookmarkButton(post), createLikeButton(post), copyButton, moreWrap, replyButton);
 
     article.append(header, body, footer);
     enhancePolls(article, post);
@@ -3077,6 +3309,127 @@
     updateTimelinePosition(0, state.stream.length);
   }
 
+  function renderFilteredView({ preserveScroll = false } = {}) {
+    if (!state.postFilter || !state.list) return;
+    hidePostMenu();
+    const previousScrollTop = preserveScroll ? state.scroll.scrollTop : 0;
+    const posts = state.stream
+      .map((id) => state.allPosts.get(id))
+      .filter((post) => post && matchesPostFilter(post));
+    const fragment = document.createDocumentFragment();
+
+    const banner = document.createElement('div');
+    banner.className = 'ld-preview-filter-banner';
+    const label = document.createElement('span');
+    label.className = 'ld-preview-filter-label';
+    label.textContent = `${postFilterLabel()} · ${posts.length} 楼`;
+    const clearButton = document.createElement('button');
+    clearButton.type = 'button';
+    clearButton.className = 'ld-preview-filter-clear';
+    clearButton.textContent = '显示全部';
+    clearButton.addEventListener('click', clearPostFilter);
+    banner.append(label, clearButton);
+    fragment.appendChild(banner);
+
+    for (const post of posts) fragment.appendChild(renderPost(post));
+    if (!posts.length) {
+      const empty = document.createElement('div');
+      empty.className = 'ld-preview-tree-empty';
+      empty.textContent = '没有找到该用户的评论';
+      fragment.appendChild(empty);
+    }
+
+    state.list.textContent = '';
+    state.list.appendChild(fragment);
+    state.loadedIds = new Set(posts.map((post) => post.id));
+    state.startIdx = 0;
+    state.endIdx = state.stream.length - 1;
+    state.topSentinel.hidden = true;
+    state.topSentinel.textContent = '';
+    state.sentinel.hidden = true;
+    state.sentinel.textContent = '';
+    state.panel.classList.remove('has-timeline');
+    if (state.viewNote) state.viewNote.textContent = `${postFilterLabel()} · ${posts.length} 楼`;
+    state.scroll.scrollTop = previousScrollTop;
+  }
+
+  async function applyPostFilter(filter) {
+    if (!filter || state.postFilterLoading || !state.currentTopicId) return;
+    hidePostMenu();
+    const requestToken = ++state.postFilterToken;
+    const loadToken = state.loadToken;
+    const topicId = state.currentTopicId;
+    const missingIds = state.stream.filter((id) => !state.allPosts.has(id));
+    if (!state.postFilter) state.postFilterRestoreIndex = state.currentIdx;
+    state.postFilterLoading = true;
+    state.panel.classList.add('is-loading');
+
+    try {
+      for (let offset = 0; offset < missingIds.length; offset += POSTS_PER_BATCH) {
+        const ids = missingIds.slice(offset, offset + POSTS_PER_BATCH);
+        setStatus(`正在加载全部评论 ${Math.min(offset + ids.length, missingIds.length)}/${missingIds.length}…`);
+        const posts = await fetchPostsByIds(topicId, ids);
+        if (requestToken !== state.postFilterToken
+          || loadToken !== state.loadToken
+          || topicId !== state.currentTopicId) return;
+        for (const post of posts) {
+          if (post) state.allPosts.set(post.id, post);
+        }
+      }
+      if (requestToken !== state.postFilterToken
+        || loadToken !== state.loadToken
+        || topicId !== state.currentTopicId) return;
+      state.postFilter = filter;
+      state.currentIdx = state.stream.findIndex((id) => matchesPostFilter(state.allPosts.get(id), filter));
+      if (state.currentIdx < 0) state.currentIdx = 0;
+      renderFilteredView();
+      showToast(`${postFilterLabel()}，共 ${state.loadedIds.size} 楼`);
+    } catch (error) {
+      if (requestToken === state.postFilterToken) {
+        showToast(`加载评论失败：${error.message || '请稍后重试'}`);
+      }
+    } finally {
+      if (requestToken === state.postFilterToken) {
+        state.postFilterLoading = false;
+        state.panel.classList.remove('is-loading');
+        setStatus('');
+      }
+    }
+  }
+
+  function clearPostFilter() {
+    if (!state.postFilter && !state.postFilterLoading) return;
+    state.postFilterToken += 1;
+    state.postFilterLoading = false;
+    state.postFilter = null;
+    hidePostMenu();
+    state.panel.classList.remove('is-loading');
+    setStatus('');
+    state.panel.classList.toggle('has-timeline', state.stream.length > 1);
+
+    if (state.viewMode === 'tree') {
+      renderTreeView({ preserveScroll: false });
+      updateSentinels();
+      state.scroll.scrollTop = 0;
+      return;
+    }
+
+    const target = Math.min(
+      Math.max(state.postFilterRestoreIndex || 0, 0),
+      Math.max(0, state.stream.length - 1),
+    );
+    const start = Math.max(0, target - 3);
+    const ids = state.stream.slice(start, start + POSTS_PER_BATCH);
+    const posts = ids.map((id) => state.allPosts.get(id)).filter(Boolean);
+    state.list.textContent = '';
+    state.loadedIds = new Set();
+    state.startIdx = start;
+    state.endIdx = start + ids.length - 1;
+    appendPosts(posts);
+    updateSentinels();
+    scrollToStreamIndex(target);
+  }
+
   function updateViewUi() {
     const isTree = state.viewMode === 'tree';
     state.panel?.classList.toggle('is-tree-view', isTree);
@@ -3094,6 +3447,10 @@
     if (persist) localStorage.setItem(VIEW_KEY, nextMode);
     updateViewUi();
     if (!state.currentTopicId || !state.stream.length) return;
+    if (state.postFilter) {
+      renderFilteredView();
+      return;
+    }
 
     if (nextMode === 'tree') {
       let contiguousEnd = -1;
@@ -3110,10 +3467,16 @@
   }
 
   function appendPosts(posts) {
+    for (const post of posts) {
+      if (post) state.allPosts.set(post.id, post);
+    }
+    if (state.postFilter) {
+      if (posts.some((post) => matchesPostFilter(post))) renderFilteredView({ preserveScroll: true });
+      return;
+    }
     const fragment = document.createDocumentFragment();
     for (const post of posts) {
       if (!post) continue;
-      state.allPosts.set(post.id, post);
       if (state.loadedIds.has(post.id)) continue;
       state.loadedIds.add(post.id);
       if (state.viewMode !== 'tree') fragment.appendChild(renderPost(post));
@@ -3123,6 +3486,7 @@
   }
 
   function prependPosts(posts) {
+    if (state.postFilter) return;
     const fragment = document.createDocumentFragment();
     for (const post of posts) {
       if (!post) continue;
@@ -3141,6 +3505,13 @@
   }
 
   function updateSentinels() {
+    if (state.postFilter) {
+      state.topSentinel.hidden = true;
+      state.topSentinel.textContent = '';
+      state.sentinel.hidden = true;
+      state.sentinel.textContent = '';
+      return;
+    }
     if (state.viewMode === 'tree') {
       state.topSentinel.hidden = true;
       state.topSentinel.textContent = '';
@@ -3218,7 +3589,7 @@
   }
 
   function syncTimelineToScroll() {
-    if (state.viewMode === 'tree' || state.timelineDragging || !state.stream.length) return;
+    if (state.postFilter || state.viewMode === 'tree' || state.timelineDragging || !state.stream.length) return;
     const viewTop = state.scroll.getBoundingClientRect().top;
     let currentIndex = state.currentIdx;
     for (const article of state.list.querySelectorAll('article.ld-preview-post')) {
@@ -3327,6 +3698,11 @@
     state.stream = data.post_stream?.stream || [];
     state.streamIndex = new Map(state.stream.map((id, index) => [id, index]));
     state.loadedIds = new Set();
+    state.postFilterToken += 1;
+    state.postFilter = null;
+    state.postFilterLoading = false;
+    state.postFilterRestoreIndex = 0;
+    hidePostMenu();
     state.allPosts = new Map(posts.filter(Boolean).map((post) => [post.id, post]));
     state.treeExpanded = new Set();
     state.treeRepliesLoaded = new Set();
@@ -3344,6 +3720,7 @@
       lastPostedAt: data.last_posted_at || '',
       highestPostNumber: data.highest_post_number || state.stream.length,
       ownerId: data.details?.created_by?.id || 0,
+      ownerUsername: data.details?.created_by?.username || '',
       lastReadPostNumber: Math.max(
         data.last_read_post_number || 0,
         localLastRead.get(String(state.currentTopicId)) || 0,
@@ -3429,6 +3806,10 @@
 
   async function loadTopic(topicId, topicUrl, force = false) {
     const token = ++state.loadToken;
+    state.postFilterToken += 1;
+    state.postFilter = null;
+    state.postFilterLoading = false;
+    hidePostMenu();
     const cached = !force && hasFreshCache(topicId);
     state.panel.classList.add('is-loading');
     state.title.textContent = '正在加载帖子...';
@@ -3465,7 +3846,7 @@
   }
 
   async function loadAfter() {
-    if (state.loadingMore || !state.currentTopicId) return;
+    if (state.postFilter || state.loadingMore || !state.currentTopicId) return;
     const from = state.endIdx + 1;
     const ids = state.stream.slice(from, from + POSTS_PER_BATCH);
     if (!ids.length) return;
@@ -3489,7 +3870,7 @@
   }
 
   async function loadBefore() {
-    if (state.loadingBefore || !state.currentTopicId || state.startIdx <= 0) return;
+    if (state.postFilter || state.loadingBefore || !state.currentTopicId || state.startIdx <= 0) return;
     const start = Math.max(0, state.startIdx - POSTS_PER_BATCH);
     const ids = state.stream.slice(start, state.startIdx);
     if (!ids.length) return;
@@ -3536,7 +3917,7 @@
       // jumping elsewhere via the timeline must leave the back target fixed.
       if (state.topicMeta) {
         const lastRead = state.topicMeta.lastReadPostNumber || 0;
-        if (state.viewMode !== 'tree'
+        if (!state.postFilter && state.viewMode !== 'tree'
           && maxVisibleNumber > lastRead && minVisibleNumber <= lastRead + 3) {
           state.topicMeta.lastReadPostNumber = maxVisibleNumber;
           localLastRead.set(String(state.currentTopicId), maxVisibleNumber);
@@ -3870,6 +4251,10 @@
     state.currentUrl = '';
     state.currentTopicId = '';
     state.loadToken += 1;
+    state.postFilterToken += 1;
+    state.postFilter = null;
+    state.postFilterLoading = false;
+    hidePostMenu();
     closeComposer();
     hideNotifMenu();
     document.body.classList.remove('ld-double-column-open', 'ld-double-column-fullscreen');
@@ -4234,6 +4619,11 @@
       if (state.notifMenu.contains(event.target) || event.target === state.notifButton) return;
       hideNotifMenu();
     }, true);
+    window.addEventListener('click', (event) => {
+      if (!state.postMenu || state.postMenu.hidden) return;
+      if (state.postMenu.contains(event.target) || event.target === state.postMenuButton) return;
+      hidePostMenu();
+    }, true);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') flushReadTimings();
     });
@@ -4250,7 +4640,8 @@
       }
       if (event.key !== 'Escape') return;
       if (!state.open) return;
-      if (state.composer && !state.composer.hidden) closeComposer(false);
+      if (state.postMenu && !state.postMenu.hidden) hidePostMenu();
+      else if (state.composer && !state.composer.hidden) closeComposer(false);
       else closePanel();
     });
     setWidth(state.width);
