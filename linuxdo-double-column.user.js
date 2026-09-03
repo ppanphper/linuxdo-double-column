@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.14.0
+// @version      0.14.1
 // @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
@@ -26,6 +26,7 @@
   const MIN_WIDTH = 380;
   const MOBILE_BREAKPOINT = 780;
   const POSTS_PER_BATCH = 20;
+  const PAGINATION_PREFETCH_PX = 800;
   const CACHE_LIMIT = 30;
   const CACHE_TTL = 5 * 60 * 1000;
   const HOVER_DELAY = 80;
@@ -126,6 +127,7 @@
     viewNote: null,
     treeButton: null,
     treeSortSelect: null,
+    paginationFrame: 0,
     loadingMore: false,
     loadingBefore: false,
     hoverTimer: 0,
@@ -1531,11 +1533,33 @@
       }
 
       #${PANEL_ID} .ld-preview-sentinel {
+        display: block;
+        width: 100%;
         min-height: 32px;
         padding: 12px 0 24px;
         color: var(--primary-medium, #757575);
+        background: transparent;
+        border: 0;
+        border-radius: 4px;
+        cursor: pointer;
+        font: inherit;
         font-size: 13px;
         text-align: center;
+      }
+
+      #${PANEL_ID} .ld-preview-sentinel:hover:not(:disabled),
+      #${PANEL_ID} .ld-preview-sentinel:focus-visible {
+        color: var(--tertiary, #0088cc);
+        background: var(--primary-very-low, #f5f5f5);
+        outline: none;
+      }
+
+      #${PANEL_ID} .ld-preview-sentinel:disabled {
+        cursor: wait;
+      }
+
+      #${PANEL_ID} .ld-preview-sentinel[hidden] {
+        display: none;
       }
 
       #${PANEL_ID} .ld-preview-status {
@@ -1855,12 +1879,18 @@
     const list = document.createElement('div');
     list.className = 'ld-preview-list';
 
-    const sentinel = document.createElement('div');
+    const sentinel = document.createElement('button');
+    sentinel.type = 'button';
     sentinel.className = 'ld-preview-sentinel';
+    sentinel.title = '加载更多评论';
+    sentinel.addEventListener('click', loadAfter);
     sentinel.hidden = true;
 
-    const topSentinel = document.createElement('div');
+    const topSentinel = document.createElement('button');
+    topSentinel.type = 'button';
     topSentinel.className = 'ld-preview-sentinel';
+    topSentinel.title = '加载之前的楼层';
+    topSentinel.addEventListener('click', loadBefore);
     topSentinel.hidden = true;
 
     const replyBar = document.createElement('div');
@@ -2129,6 +2159,7 @@
       timelineSyncFrame = requestAnimationFrame(() => {
         timelineSyncFrame = 0;
         syncTimelineToScroll();
+        checkPaginationThresholds();
       });
     }, { passive: true });
 
@@ -3411,6 +3442,7 @@
       renderTreeView({ preserveScroll: false });
       updateSentinels();
       state.scroll.scrollTop = 0;
+      schedulePaginationCheck();
       return;
     }
 
@@ -3428,6 +3460,7 @@
     appendPosts(posts);
     updateSentinels();
     scrollToStreamIndex(target);
+    schedulePaginationCheck();
   }
 
   function updateViewUi() {
@@ -3464,6 +3497,7 @@
     } else {
       renderOriginalView();
     }
+    schedulePaginationCheck();
   }
 
   function appendPosts(posts) {
@@ -3517,13 +3551,38 @@
       state.topSentinel.textContent = '';
       state.sentinel.hidden = state.endIdx >= state.stream.length - 1;
       state.sentinel.textContent = state.sentinel.hidden ? '' : '继续滚动，按需加载更多评论…';
+      state.sentinel.disabled = state.loadingMore;
       return;
     }
     const total = state.stream.length;
     state.sentinel.hidden = state.endIdx >= total - 1;
-    if (state.sentinel.hidden) state.sentinel.textContent = '';
+    state.sentinel.textContent = state.sentinel.hidden ? '' : '继续滚动，按需加载更多评论…';
+    state.sentinel.disabled = state.loadingMore;
     state.topSentinel.hidden = state.startIdx <= 0;
-    if (state.topSentinel.hidden) state.topSentinel.textContent = '';
+    state.topSentinel.textContent = state.topSentinel.hidden ? '' : '继续滚动，按需加载之前的楼层…';
+    state.topSentinel.disabled = state.loadingBefore;
+  }
+
+  function checkPaginationThresholds() {
+    if (!state.open || state.postFilter || !state.scroll || !state.currentTopicId) return;
+    const distanceToBottom = Math.max(
+      0,
+      state.scroll.scrollHeight - state.scroll.clientHeight - state.scroll.scrollTop,
+    );
+    if (state.endIdx < state.stream.length - 1 && distanceToBottom <= PAGINATION_PREFETCH_PX) {
+      loadAfter();
+    }
+    if (state.startIdx > 0 && state.scroll.scrollTop <= PAGINATION_PREFETCH_PX) {
+      loadBefore();
+    }
+  }
+
+  function schedulePaginationCheck() {
+    if (state.paginationFrame) return;
+    state.paginationFrame = requestAnimationFrame(() => {
+      state.paginationFrame = 0;
+      checkPaginationThresholds();
+    });
   }
 
   function updateTimelinePosition(index, total) {
@@ -3750,6 +3809,7 @@
     updateTimelinePosition(0, state.stream.length);
     state.scroll.scrollTop = 0;
     if (state.viewMode === 'tree') setViewMode('tree', { persist: false });
+    schedulePaginationCheck();
   }
 
   function unsubscribeLiveUpdates() {
@@ -3853,19 +3913,26 @@
 
     const token = state.loadToken;
     state.loadingMore = true;
+    state.sentinel.disabled = true;
     state.sentinel.textContent = '正在加载更多回复...';
+    let loaded = false;
 
     try {
       const posts = await fetchPostsByIds(state.currentTopicId, ids);
       if (token !== state.loadToken) return;
       appendPosts(posts);
       state.endIdx = from + ids.length - 1;
+      loaded = true;
       state.sentinel.textContent = '';
       updateSentinels();
     } catch {
-      if (token === state.loadToken) state.sentinel.textContent = '加载更多失败，继续滚动重试';
+      if (token === state.loadToken) state.sentinel.textContent = '加载更多失败，点击重试';
     } finally {
-      if (token === state.loadToken) state.loadingMore = false;
+      if (token === state.loadToken) {
+        state.loadingMore = false;
+        state.sentinel.disabled = false;
+        if (loaded) schedulePaginationCheck();
+      }
     }
   }
 
@@ -3877,19 +3944,26 @@
 
     const token = state.loadToken;
     state.loadingBefore = true;
+    state.topSentinel.disabled = true;
     state.topSentinel.textContent = '正在加载之前的楼层...';
+    let loaded = false;
 
     try {
       const posts = await fetchPostsByIds(state.currentTopicId, ids);
       if (token !== state.loadToken) return;
       prependPosts(posts);
       state.startIdx = start;
+      loaded = true;
       state.topSentinel.textContent = '';
       updateSentinels();
     } catch {
-      if (token === state.loadToken) state.topSentinel.textContent = '加载失败，继续滚动重试';
+      if (token === state.loadToken) state.topSentinel.textContent = '加载失败，点击重试';
     } finally {
-      if (token === state.loadToken) state.loadingBefore = false;
+      if (token === state.loadToken) {
+        state.loadingBefore = false;
+        state.topSentinel.disabled = false;
+        if (loaded) schedulePaginationCheck();
+      }
     }
   }
 
@@ -4251,6 +4325,8 @@
     state.currentUrl = '';
     state.currentTopicId = '';
     state.loadToken += 1;
+    if (state.paginationFrame) cancelAnimationFrame(state.paginationFrame);
+    state.paginationFrame = 0;
     state.postFilterToken += 1;
     state.postFilter = null;
     state.postFilterLoading = false;
