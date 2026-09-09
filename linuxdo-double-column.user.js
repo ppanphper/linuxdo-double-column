@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.14.3
+// @version      0.14.4
 // @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
@@ -90,6 +90,7 @@
     lightboxClose: null,
     lightboxImages: [],
     lightboxIndex: -1,
+    lightboxFitScale: 1,
     lightboxScale: 1,
     lightboxX: 0,
     lightboxY: 0,
@@ -464,6 +465,12 @@
       #${PANEL_ID} .ld-preview-heading.is-retryable,
       #${PANEL_ID} .ld-preview-status.is-retryable {
         cursor: pointer;
+      }
+
+      #${PANEL_ID} .ld-preview-heading.is-retryable:focus-visible,
+      #${PANEL_ID} .ld-preview-status.is-retryable:focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
       }
 
       #${PANEL_ID} .ld-preview-action {
@@ -4524,7 +4531,7 @@
   function updateLightboxTransform() {
     if (!state.lightboxImg) return;
     state.lightboxImg.style.transform = `translate3d(${state.lightboxX}px, ${state.lightboxY}px, 0) scale(${state.lightboxScale})`;
-    state.lightbox?.classList.toggle('is-zoomed', state.lightboxScale > 1);
+    state.lightbox?.classList.toggle('is-zoomed', state.lightboxScale > state.lightboxFitScale + 0.001);
     state.lightbox?.classList.toggle('is-pannable', canPanLightbox());
     updateLightboxControls();
   }
@@ -4557,17 +4564,24 @@
 
   function positionLightboxAtStart() {
     if (!state.lightboxImg || !state.lightboxStage) return;
+    const naturalWidth = state.lightboxImg.naturalWidth || state.lightboxImg.offsetWidth;
+    const naturalHeight = state.lightboxImg.naturalHeight || state.lightboxImg.offsetHeight;
+    const stageWidth = state.lightboxStage.clientWidth;
+    const stageHeight = state.lightboxStage.clientHeight;
+    const fitScale = naturalWidth > 0 && naturalHeight > 0 && stageWidth > 0 && stageHeight > 0
+      ? Math.min(1, stageWidth / naturalWidth, stageHeight / naturalHeight)
+      : 1;
+    state.lightboxFitScale = Math.max(0.01, fitScale);
+    state.lightboxScale = state.lightboxFitScale;
     state.lightboxX = 0;
-    state.lightboxY = Math.max(
-      0,
-      (state.lightboxImg.offsetHeight * state.lightboxScale - state.lightboxStage.clientHeight) / 2,
-    );
+    state.lightboxY = 0;
     clampLightboxPan();
     updateLightboxTransform();
   }
 
   function resetLightboxTransform() {
     finishLightboxDrag();
+    state.lightboxFitScale = 1;
     state.lightboxScale = 1;
     state.lightboxX = 0;
     state.lightboxY = 0;
@@ -4598,7 +4612,7 @@
     const previousScale = state.lightboxScale;
     const nextScale = Math.min(
       LIGHTBOX_MAX_SCALE,
-      Math.max(LIGHTBOX_MIN_SCALE, previousScale * factor),
+      Math.max(Math.min(LIGHTBOX_MIN_SCALE, state.lightboxFitScale), previousScale * factor),
     );
     if (Math.abs(nextScale - previousScale) < 0.001) return;
 
@@ -4669,6 +4683,7 @@
     state.lightboxImg.style.transform = '';
     state.lightboxImages = [];
     state.lightboxIndex = -1;
+    state.lightboxFitScale = 1;
     state.lightboxScale = 1;
     state.lightboxX = 0;
     state.lightboxY = 0;
@@ -4775,8 +4790,12 @@
     window.addEventListener('resize', () => {
       updatePanelTop();
       if (state.lightbox?.classList.contains('is-open')) {
-        clampLightboxPan();
-        updateLightboxTransform();
+        if (Math.abs(state.lightboxScale - state.lightboxFitScale) < 0.001) {
+          positionLightboxAtStart();
+        } else {
+          clampLightboxPan();
+          updateLightboxTransform();
+        }
       }
     });
     window.addEventListener('popstate', handleHistoryChange);
