@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.14.1
+// @version      0.14.2
 // @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
@@ -1007,22 +1007,30 @@
       #ld-preview-lightbox .ld-preview-lightbox-stage {
         position: absolute;
         inset: 24px;
-        display: grid;
+        display: flex;
         overflow: hidden;
-        place-items: center;
+        align-items: center;
+        justify-content: center;
         cursor: zoom-out;
       }
 
       #ld-preview-lightbox .ld-preview-lightbox-image {
-        max-width: 100%;
-        max-height: 100%;
+        width: auto;
+        height: auto;
+        max-width: none;
+        max-height: none;
         object-fit: contain;
         border-radius: 4px;
         box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
         cursor: zoom-in;
+        flex: 0 0 auto;
         touch-action: none;
         transform-origin: center;
         will-change: transform;
+      }
+
+      #ld-preview-lightbox.is-pannable .ld-preview-lightbox-image {
+        cursor: grab;
       }
 
       #ld-preview-lightbox.is-zoomed .ld-preview-lightbox-image {
@@ -4362,8 +4370,7 @@
     img.alt = '';
     img.draggable = false;
     img.addEventListener('load', () => {
-      clampLightboxPan();
-      updateLightboxTransform();
+      positionLightboxAtStart();
     });
     img.addEventListener('pointerdown', handleLightboxPointerDown);
     img.addEventListener('pointermove', handleLightboxPointerMove);
@@ -4465,11 +4472,20 @@
     if (!state.lightboxImg) return;
     state.lightboxImg.style.transform = `translate3d(${state.lightboxX}px, ${state.lightboxY}px, 0) scale(${state.lightboxScale})`;
     state.lightbox?.classList.toggle('is-zoomed', state.lightboxScale > 1);
+    state.lightbox?.classList.toggle('is-pannable', canPanLightbox());
     updateLightboxControls();
   }
 
+  function canPanLightbox() {
+    if (!state.lightboxImg || !state.lightboxStage) return false;
+    const width = state.lightboxImg.offsetWidth * state.lightboxScale;
+    const height = state.lightboxImg.offsetHeight * state.lightboxScale;
+    return width > state.lightboxStage.clientWidth + 1
+      || height > state.lightboxStage.clientHeight + 1;
+  }
+
   function clampLightboxPan() {
-    if (!state.lightboxImg || !state.lightboxStage || state.lightboxScale <= 1) {
+    if (!state.lightboxImg || !state.lightboxStage) {
       state.lightboxX = 0;
       state.lightboxY = 0;
       return;
@@ -4484,6 +4500,17 @@
     );
     state.lightboxX = Math.max(-maxX, Math.min(maxX, state.lightboxX));
     state.lightboxY = Math.max(-maxY, Math.min(maxY, state.lightboxY));
+  }
+
+  function positionLightboxAtStart() {
+    if (!state.lightboxImg || !state.lightboxStage) return;
+    state.lightboxX = 0;
+    state.lightboxY = Math.max(
+      0,
+      (state.lightboxImg.offsetHeight * state.lightboxScale - state.lightboxStage.clientHeight) / 2,
+    );
+    clampLightboxPan();
+    updateLightboxTransform();
   }
 
   function resetLightboxTransform() {
@@ -4502,6 +4529,10 @@
     state.lightboxImg.alt = item.alt;
     state.lightboxImg.src = item.src;
     updateLightboxControls();
+    requestAnimationFrame(() => {
+      if (state.lightboxIndex !== index) return;
+      if (state.lightboxImg.complete) positionLightboxAtStart();
+    });
   }
 
   function handleLightboxWheel(event) {
@@ -4529,7 +4560,7 @@
   }
 
   function handleLightboxPointerDown(event) {
-    if (event.button !== 0 || state.lightboxScale <= 1) return;
+    if (event.button !== 0 || !canPanLightbox()) return;
     event.preventDefault();
     event.stopPropagation();
     state.lightboxPointerId = event.pointerId;
@@ -4579,7 +4610,7 @@
     const returnFocus = state.lightboxReturnFocus;
     finishLightboxDrag();
     state.lightbox.classList.remove('is-open');
-    state.lightbox.classList.remove('is-zoomed', 'is-dragging');
+    state.lightbox.classList.remove('is-zoomed', 'is-pannable', 'is-dragging');
     state.lightboxImg.removeAttribute('src');
     state.lightboxImg.alt = '';
     state.lightboxImg.style.transform = '';
@@ -4688,7 +4719,13 @@
     window.addEventListener('click', handleTopicClick, true);
     window.addEventListener('pointerover', handleTopicPointerOver, true);
     window.addEventListener('pointerout', handleTopicPointerOut, true);
-    window.addEventListener('resize', updatePanelTop);
+    window.addEventListener('resize', () => {
+      updatePanelTop();
+      if (state.lightbox?.classList.contains('is-open')) {
+        clampLightboxPan();
+        updateLightboxTransform();
+      }
+    });
     window.addEventListener('popstate', handleHistoryChange);
     window.addEventListener('click', (event) => {
       if (!state.notifMenu || state.notifMenu.hidden) return;
