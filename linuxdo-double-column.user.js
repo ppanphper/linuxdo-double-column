@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.14.2
+// @version      0.14.3
 // @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
@@ -105,6 +105,7 @@
     submittingReply: false,
     currentUrl: '',
     currentTopicId: '',
+    topicLoadFailed: false,
     loadToken: 0,
     stream: [],
     streamIndex: new Map(),
@@ -147,6 +148,9 @@
   const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
   let csrfToken = '';
   let toastTimer = 0;
+
+  // 请求均使用页面上下文的原生 fetch：浏览器会自动附带真实 User-Agent，
+  // same-origin credentials 同时保留登录态及 Cloudflare 相关 Cookie。
 
   const readTracker = {
     timings: new Map(),
@@ -455,6 +459,11 @@
         line-height: 1.3;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      #${PANEL_ID} .ld-preview-heading.is-retryable,
+      #${PANEL_ID} .ld-preview-status.is-retryable {
+        cursor: pointer;
       }
 
       #${PANEL_ID} .ld-preview-action {
@@ -1846,6 +1855,14 @@
     heading.className = 'ld-preview-heading';
     heading.textContent = '帖子预览';
     heading.title = '帖子预览';
+    heading.addEventListener('click', () => {
+      if (state.topicLoadFailed) reloadCurrentTopic();
+    });
+    heading.addEventListener('keydown', (event) => {
+      if (!state.topicLoadFailed || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      reloadCurrentTopic();
+    });
 
     const content = document.createElement('div');
     content.className = 'ld-preview-content';
@@ -1915,6 +1932,14 @@
     const status = document.createElement('div');
     status.className = 'ld-preview-status';
     status.hidden = true;
+    status.addEventListener('click', () => {
+      if (state.topicLoadFailed) reloadCurrentTopic();
+    });
+    status.addEventListener('keydown', (event) => {
+      if (!state.topicLoadFailed || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      reloadCurrentTopic();
+    });
 
     const toast = document.createElement('div');
     toast.className = 'ld-preview-toast';
@@ -1987,9 +2012,7 @@
     const originalButton = createButton('↗', '在原页面打开', () => {
       if (state.currentUrl) window.open(state.currentUrl, '_blank', 'noopener,noreferrer');
     });
-    const refreshButton = createButton('↻', '刷新预览', () => {
-      if (state.currentTopicId) loadTopic(state.currentTopicId, state.currentUrl, true);
-    });
+    const refreshButton = createButton('↻', '刷新预览', reloadCurrentTopic);
     const treeButton = createButton('🌳', '切换到树状评论', () => {
       setViewMode(state.viewMode === 'tree' ? 'original' : 'tree');
     });
@@ -2290,6 +2313,27 @@
     if (!state.status) return;
     state.status.textContent = message;
     state.status.hidden = !message;
+  }
+
+  function setTopicLoadFailed(failed) {
+    state.topicLoadFailed = failed;
+    for (const element of [state.title, state.status]) {
+      if (!element) continue;
+      element.classList.toggle('is-retryable', failed);
+      element.tabIndex = failed ? 0 : -1;
+      if (failed) {
+        element.setAttribute('role', 'button');
+        element.setAttribute('aria-label', '加载失败，点击重试');
+      } else {
+        element.removeAttribute('role');
+        element.removeAttribute('aria-label');
+      }
+    }
+  }
+
+  function reloadCurrentTopic() {
+    if (!state.currentTopicId || state.panel?.classList.contains('is-loading')) return;
+    loadTopic(state.currentTopicId, state.currentUrl, true);
   }
 
   function showToast(message) {
@@ -3878,6 +3922,7 @@
     state.postFilter = null;
     state.postFilterLoading = false;
     hidePostMenu();
+    setTopicLoadFailed(false);
     const cached = !force && hasFreshCache(topicId);
     state.panel.classList.add('is-loading');
     state.title.textContent = '正在加载帖子...';
@@ -3888,6 +3933,7 @@
       const data = await fetchTopic(topicId, { force });
       if (token !== state.loadToken) return;
       state.panel.classList.remove('is-loading');
+      setTopicLoadFailed(false);
       setStatus('');
       renderTopic(data, topicUrl);
       const floor = floorFromUrl(topicUrl);
@@ -3907,9 +3953,10 @@
     } catch {
       if (token !== state.loadToken) return;
       state.panel.classList.remove('is-loading');
-      setStatus('加载失败，点击 ↻ 重试');
+      setTopicLoadFailed(true);
+      setStatus('加载失败，点击标题或 ↻ 重试');
       state.title.textContent = '帖子预览';
-      state.title.title = topicUrl;
+      state.title.title = '加载失败，点击标题重试';
     }
   }
 
@@ -4307,6 +4354,11 @@
     }
 
     if (state.currentTopicId === topicId) {
+      state.currentUrl = normalizedUrl;
+      if (state.topicLoadFailed) {
+        reloadCurrentTopic();
+        return;
+      }
       const floor = floorFromUrl(normalizedUrl);
       if (floor >= 1 && state.stream.length) {
         jumpToIndex(Math.min(floor - 1, state.stream.length - 1));
@@ -4332,6 +4384,7 @@
     state.fullscreen = false;
     state.currentUrl = '';
     state.currentTopicId = '';
+    setTopicLoadFailed(false);
     state.loadToken += 1;
     if (state.paginationFrame) cancelAnimationFrame(state.paginationFrame);
     state.paginationFrame = 0;
