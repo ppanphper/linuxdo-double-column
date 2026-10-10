@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.14.5
-// @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/收藏/投票/时间线及阅读时长上报）
+// @version      0.15.0
+// @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/话题与楼层收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
 // @supportURL   https://github.com/ppanphper/linuxdo-double-column/issues
@@ -111,7 +111,7 @@
     stream: [],
     streamIndex: new Map(),
     topicMeta: null,
-    bookmarkIds: new Map(),
+    topicBookmarkButton: null,
     startIdx: 0,
     endIdx: -1,
     currentIdx: 0,
@@ -2041,6 +2041,8 @@
     timelineFoot.append(timelineReplyButton, notifButton);
     timeline.append(timelineStart, timelineTrack, timelineLabel, timelineLast, timelineFoot, notifMenu);
 
+    const topicBookmarkButton = createButton('☆', '收藏话题（书签）', toggleTopicBookmark);
+    topicBookmarkButton.classList.add('ld-preview-bookmark');
     const replyButton = createButton('✎', '回复主题', () => {
       if (state.currentTopicId) openComposer(null, '');
     });
@@ -2172,7 +2174,7 @@
     composerActions.append(composerCancel, composerSend);
     composer.append(composerTarget, composerTools, composerInput, composerFileInput, composerPreview, composerError, composerActions);
 
-    toolbar.append(heading, replyButton, treeButton, originalButton, refreshButton, fullscreenButton, closeButton);
+    toolbar.append(heading, topicBookmarkButton, replyButton, treeButton, originalButton, refreshButton, fullscreenButton, closeButton);
     scroll.append(topSentinel, list, sentinel, replyBar);
     content.append(scroll, timeline, status, toast);
     panel.append(resizer, toolbar, viewBar, content, composer);
@@ -2193,6 +2195,7 @@
     state.notifMenu = notifMenu;
     state.notifButton = notifButton;
     state.title = heading;
+    state.topicBookmarkButton = topicBookmarkButton;
     state.status = status;
     state.toast = toast;
     state.viewBar = viewBar;
@@ -2504,9 +2507,13 @@
     button.addEventListener('click', async () => {
       if (busy) return;
       busy = true;
+      // 先取引用：请求期间切换话题时，书签仍记到发起请求的话题上。
+      const bookmarks = topicBookmarks();
       try {
         if (post.bookmarked) {
-          const bookmarkId = post.bookmark_id || state.bookmarkIds.get(post.id);
+          const bookmarkId = post.bookmark_id || bookmarks.find((bookmark) => (
+            bookmark.bookmarkable_type === 'Post' && bookmark.bookmarkable_id === post.id
+          ))?.id;
           if (!bookmarkId) {
             showToast('该收藏需在原页面管理');
             return;
@@ -2514,7 +2521,7 @@
           await apiRequest('DELETE', `/bookmarks/${bookmarkId}.json`);
           post.bookmarked = false;
           post.bookmark_id = null;
-          state.bookmarkIds.delete(post.id);
+          removeBookmarkEntry(bookmarks, bookmarkId);
           showToast('已取消收藏');
         } else {
           const data = await apiRequest('POST', '/bookmarks.json', {
@@ -2524,11 +2531,17 @@
           post.bookmarked = true;
           if (data?.id) {
             post.bookmark_id = data.id;
-            state.bookmarkIds.set(post.id, data.id);
+            bookmarks.push({
+              id: data.id,
+              bookmarkable_id: post.id,
+              bookmarkable_type: 'Post',
+              post_number: post.post_number,
+            });
           }
           showToast('已收藏，可在「我的活动 - 书签」中查看');
         }
         sync();
+        updateTopicBookmarkButton();
       } catch (error) {
         showToast(error.message || '操作失败');
       } finally {
@@ -2537,6 +2550,64 @@
     });
 
     return button;
+  }
+
+  // 与 topicCache 中的 data.bookmarks 是同一个数组，原地修改可让缓存同步书签状态。
+  function topicBookmarks() {
+    return state.topicMeta?.bookmarks || [];
+  }
+
+  function removeBookmarkEntry(bookmarks, bookmarkId) {
+    const index = bookmarks.findIndex((bookmark) => bookmark.id === bookmarkId);
+    if (index >= 0) bookmarks.splice(index, 1);
+  }
+
+  function updateTopicBookmarkButton() {
+    const button = state.topicBookmarkButton;
+    if (!button) return;
+    const bookmarks = topicBookmarks();
+    const bookmarked = bookmarks.some((bookmark) => bookmark.bookmarkable_type === 'Topic');
+    const postCount = bookmarks.filter((bookmark) => bookmark.bookmarkable_type === 'Post').length;
+    const label = bookmarked ? '取消收藏话题（书签）' : '收藏话题（书签）';
+    button.textContent = bookmarked ? '★' : '☆';
+    button.classList.toggle('is-bookmarked', bookmarked);
+    button.title = postCount ? `${label}，本话题另有 ${postCount} 个楼层书签` : label;
+    button.setAttribute('aria-label', button.title);
+  }
+
+  async function toggleTopicBookmark() {
+    const meta = state.topicMeta;
+    const button = state.topicBookmarkButton;
+    // 加载中或加载失败时 topicMeta 仍是上一个话题，不能把书签记到它上面。
+    if (!meta || !button || button.disabled || state.panel?.classList.contains('is-loading')) return;
+    if (String(meta.topicId) !== String(state.currentTopicId)) return;
+
+    button.disabled = true;
+    const bookmarks = meta.bookmarks;
+    try {
+      const bookmark = bookmarks.find((entry) => entry.bookmarkable_type === 'Topic');
+      if (bookmark) {
+        if (!bookmark.id) {
+          showToast('该收藏需在原页面管理');
+          return;
+        }
+        await apiRequest('DELETE', `/bookmarks/${bookmark.id}.json`);
+        removeBookmarkEntry(bookmarks, bookmark.id);
+        showToast('已取消收藏话题');
+      } else {
+        const data = await apiRequest('POST', '/bookmarks.json', {
+          bookmarkable_id: meta.topicId,
+          bookmarkable_type: 'Topic',
+        });
+        bookmarks.push({ id: data?.id, bookmarkable_id: meta.topicId, bookmarkable_type: 'Topic' });
+        showToast('已收藏话题，可在「我的活动 - 书签」中查看');
+      }
+    } catch (error) {
+      showToast(error.message || '操作失败');
+    } finally {
+      button.disabled = false;
+      updateTopicBookmarkButton();
+    }
   }
 
   async function copyPostLink(post) {
@@ -3861,7 +3932,10 @@
     state.startIdx = 0;
     state.endIdx = posts.length - 1;
     state.currentIdx = 0;
+    if (!Array.isArray(data.bookmarks)) data.bookmarks = [];
     state.topicMeta = {
+      topicId: data.id || Number(state.currentTopicId),
+      bookmarks: data.bookmarks,
       createdAt: data.created_at || '',
       lastPostedAt: data.last_posted_at || '',
       highestPostNumber: data.highest_post_number || state.stream.length,
@@ -3873,9 +3947,7 @@
       ),
       notificationLevel: data.details?.notification_level ?? 1,
     };
-    state.bookmarkIds = new Map((data.bookmarks || [])
-      .filter((bookmark) => bookmark.bookmarkable_type === 'Post')
-      .map((bookmark) => [bookmark.bookmarkable_id, bookmark.id]));
+    updateTopicBookmarkButton();
     state.list.textContent = '';
     state.sentinel.textContent = '';
     state.topSentinel.textContent = '';
