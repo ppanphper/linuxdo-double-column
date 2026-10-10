@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.14.4
+// @version      0.14.5
 // @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
@@ -145,6 +145,7 @@
 
   const topicCache = new Map();
   const pendingFetches = new Map();
+  const trackedTopicViews = new Set();
   const localLastRead = new Map();
   const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
   let csrfToken = '';
@@ -211,21 +212,42 @@
     return Boolean(entry && Date.now() - entry.time < CACHE_TTL);
   }
 
-  function fetchTopic(topicId, { force = false } = {}) {
+  function fetchTopic(topicId, { force = false, trackView = false } = {}) {
+    // 每个话题在本页面会话内只上报一次浏览；悬停预取不传 trackView，不计入浏览数。
+    const shouldTrack = trackView && !trackedTopicViews.has(String(topicId));
     if (!force) {
       const entry = topicCache.get(topicId);
       if (entry && Date.now() - entry.time < CACHE_TTL) {
         topicCache.delete(topicId);
         topicCache.set(topicId, entry);
+        if (shouldTrack) requestTopic(topicId, true).catch(() => {});
         return Promise.resolve(entry.data);
       }
       const pending = pendingFetches.get(topicId);
-      if (pending) return pending;
+      if (pending) {
+        if (shouldTrack) requestTopic(topicId, true).catch(() => {});
+        return pending;
+      }
+    }
+    return requestTopic(topicId, shouldTrack);
+  }
+
+  function requestTopic(topicId, trackView) {
+    const params = new URLSearchParams({ include_suggested: 'false' });
+    const headers = { Accept: 'application/json' };
+    if (trackView) {
+      // 与原生前端 lib/ajax.js 一致：服务端只在收到这两个请求头时写入 topic_views，
+      // 计入用户的浏览话题数；track_visit 则更新 topic_users 的最近访问时间。
+      params.set('track_visit', 'true');
+      headers['Discourse-Track-View'] = 'true';
+      headers['Discourse-Track-View-Topic-Id'] = String(topicId);
+      trackedTopicViews.add(String(topicId));
     }
 
-    const request = fetch(`/t/topic/${topicId}.json?include_suggested=false`, {
+    // 不带 slug：/t/topic/{id}.json 遇到 slug 不符的话题会 301 重定向并丢弃 track_visit。
+    const request = fetch(`/t/${topicId}.json?${params}`, {
       credentials: 'same-origin',
-      headers: { Accept: 'application/json' },
+      headers,
     })
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -238,7 +260,13 @@
         }
         return data;
       })
-      .finally(() => pendingFetches.delete(topicId));
+      .catch((error) => {
+        if (trackView) trackedTopicViews.delete(String(topicId));
+        throw error;
+      })
+      .finally(() => {
+        if (pendingFetches.get(topicId) === request) pendingFetches.delete(topicId);
+      });
 
     pendingFetches.set(topicId, request);
     return request;
@@ -3937,7 +3965,7 @@
     if (!cached) setStatus('正在加载帖子...');
 
     try {
-      const data = await fetchTopic(topicId, { force });
+      const data = await fetchTopic(topicId, { force, trackView: true });
       if (token !== state.loadToken) return;
       state.panel.classList.remove('is-loading');
       setTopicLoadFailed(false);
