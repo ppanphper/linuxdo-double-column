@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.15.0
+// @version      0.16.1
 // @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/话题与楼层收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
@@ -123,8 +123,12 @@
     treeRepliesLoaded: new Set(),
     treeRepliesLoading: new Set(),
     treeReplyIds: new Map(),
-    treeDirectReplyIds: new Map(),
-    treeBranchReplyIds: new Map(),
+    treeRepliesIncomplete: new Set(),
+    treeDepthLimit: 3,
+    treeFocusNumber: 0,
+    treeFocusHistory: [],
+    treeFocusBar: null,
+    treeResizeObserver: null,
     viewBar: null,
     viewNote: null,
     treeButton: null,
@@ -475,7 +479,8 @@
         display: none !important;
       }
 
-      #${PANEL_ID}.is-tree-view .ld-preview-scroll {
+      #${PANEL_ID}.is-tree-view .ld-preview-scroll,
+      #${PANEL_ID}.is-tree-view.has-timeline .ld-preview-scroll {
         padding-right: 18px;
       }
 
@@ -762,7 +767,7 @@
 
       #${PANEL_ID} .ld-preview-tree-node {
         --ld-tree-axis: 14px;
-        --ld-tree-indent: clamp(17px, 2vw, 22px);
+        --ld-tree-indent: 10px;
         --ld-tree-connector: rgba(127, 127, 127, 0.24);
         --ld-tree-connector: color-mix(in srgb, var(--primary, #202124) 18%, transparent);
         position: relative;
@@ -782,6 +787,70 @@
 
       #${PANEL_ID} .ld-preview-tree-children[hidden] {
         display: none;
+      }
+
+      /* 保留真实 DOM 父子关系，达到视觉上限后停止增加横向位移。 */
+      #${PANEL_ID} .ld-preview-tree-node.is-tree-flat > .ld-preview-tree-children {
+        margin-left: 0;
+        padding-left: 0;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-node.is-tree-flat > .ld-preview-post > .ld-preview-tree-stem,
+      #${PANEL_ID} .ld-preview-tree-node.is-tree-flat > .ld-preview-tree-children > .ld-preview-tree-rail,
+      #${PANEL_ID} .ld-preview-tree-node.is-tree-flat > .ld-preview-tree-children > .ld-preview-tree-node::before,
+      #${PANEL_ID} .ld-preview-tree-node.is-tree-flat > .ld-preview-tree-children > .ld-preview-tree-node::after {
+        display: none;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-actions {
+        display: flex;
+        flex: 1 0 100%;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 3px 0;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-actions .ld-preview-tree-collapse {
+        margin-right: 0;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-focus,
+      #${PANEL_ID} .ld-preview-tree-focus-bar button {
+        padding: 3px 5px;
+        color: var(--tertiary, #0088cc);
+        background: transparent;
+        border: 0;
+        border-radius: 4px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-focus:hover,
+      #${PANEL_ID} .ld-preview-tree-focus-bar button:hover {
+        background: var(--primary-low, #e9e9e9);
+      }
+
+      #${PANEL_ID} .ld-preview-tree-focus-bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 12px;
+        color: var(--primary-medium, #757575);
+        background: var(--secondary, #ffffff);
+        border-bottom: 1px solid var(--primary-low, #d7d7d7);
+        font-size: 12px;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-focus-bar[hidden] {
+        display: none;
+      }
+
+      #${PANEL_ID} .ld-preview-tree-focus-bar .ld-preview-tree-focus-current {
+        color: var(--primary, #202124);
+        font-weight: 600;
       }
 
       #${PANEL_ID} .ld-preview-tree-rail {
@@ -945,6 +1014,7 @@
       }
 
       #${PANEL_ID}.is-tree-view .ld-preview-post-header {
+        flex-wrap: wrap;
         margin-bottom: 3px;
       }
 
@@ -971,6 +1041,7 @@
       }
 
       #${PANEL_ID}.is-tree-view .ld-preview-post-footer {
+        flex-wrap: wrap;
         min-height: 24px;
         align-items: center;
         padding: 0 0 2px;
@@ -1224,6 +1295,20 @@
 
       #${PANEL_ID} .ld-preview-reply-to + .ld-preview-post-meta {
         margin-left: 0;
+      }
+
+      #${PANEL_ID} .ld-preview-post > .ld-preview-reply-to {
+        display: flex;
+        width: fit-content;
+        max-width: calc(100% - var(--ld-post-avatar-size) - var(--ld-post-header-gap));
+        margin: 2px 0 5px calc(var(--ld-post-avatar-size) + var(--ld-post-header-gap));
+        padding: 2px 0;
+        text-align: left;
+        overflow-wrap: anywhere;
+      }
+
+      #${PANEL_ID} .ld-preview-post > .ld-preview-reply-to > span:last-child {
+        min-width: 0;
       }
 
       #${PANEL_ID} .ld-preview-replies-toggle {
@@ -1932,6 +2017,11 @@
     originalViewButton.addEventListener('click', () => setViewMode('original'));
     viewBar.append(viewTitle, viewNote, treeSortSelect, originalViewButton);
 
+    const treeFocusBar = document.createElement('nav');
+    treeFocusBar.className = 'ld-preview-tree-focus-bar';
+    treeFocusBar.setAttribute('aria-label', '评论分支导航');
+    treeFocusBar.hidden = true;
+
     const scroll = document.createElement('div');
     scroll.className = 'ld-preview-scroll';
     scroll.addEventListener('click', handlePanelClick);
@@ -2177,7 +2267,7 @@
     toolbar.append(heading, topicBookmarkButton, replyButton, treeButton, originalButton, refreshButton, fullscreenButton, closeButton);
     scroll.append(topSentinel, list, sentinel, replyBar);
     content.append(scroll, timeline, status, toast);
-    panel.append(resizer, toolbar, viewBar, content, composer);
+    panel.append(resizer, toolbar, viewBar, treeFocusBar, content, composer);
     document.body.appendChild(panel);
 
     state.panel = panel;
@@ -2202,6 +2292,7 @@
     state.viewNote = viewNote;
     state.treeButton = treeButton;
     state.treeSortSelect = treeSortSelect;
+    state.treeFocusBar = treeFocusBar;
     state.composer = composer;
     state.composerTarget = composerTarget;
     state.composerTargetText = composerTargetText;
@@ -2221,6 +2312,10 @@
     }, { root: scroll, rootMargin: '800px 0px' });
     state.observer.observe(sentinel);
     state.observer.observe(topSentinel);
+
+    // 依据实际面板宽度调整，拖动分栏和全屏切换均生效；不重建评论或关闭父帖预览。
+    state.treeResizeObserver = new ResizeObserver(updateTreeLayout);
+    state.treeResizeObserver.observe(scroll);
 
     let timelineSyncFrame = 0;
     scroll.addEventListener('scroll', () => {
@@ -3076,7 +3171,7 @@
     return [await fallback.json()];
   }
 
-  function renderPost(post, { treeMode = false } = {}) {
+  function renderPost(post, { treeMode = false, parentPost = null } = {}) {
     const article = document.createElement('article');
     article.className = 'ld-preview-post';
     article.dataset.postNumber = post.post_number != null ? String(post.post_number) : '';
@@ -3111,16 +3206,18 @@
 
     header.append(avatar, author);
     appendUserBadges(header, post);
-    if (!treeMode && post.reply_to_post_number) {
-      const replyToUser = post.reply_to_user;
+    article.appendChild(header);
+    if (post.reply_to_post_number) {
+      const replyToUser = post.reply_to_user || parentPost;
       const replyTo = document.createElement('button');
       replyTo.type = 'button';
       replyTo.className = 'ld-preview-reply-to';
       replyTo.title = `回复了 #${post.reply_to_post_number}，点击展开原帖`;
+      replyTo.setAttribute('aria-expanded', 'false');
       const replyToArrow = document.createElement('span');
       replyToArrow.textContent = '↪';
       replyTo.appendChild(replyToArrow);
-      if (replyToUser?.avatar_template) {
+      if (!treeMode && replyToUser?.avatar_template) {
         const replyToAvatar = document.createElement('img');
         replyToAvatar.className = 'ld-preview-reply-to-avatar';
         replyToAvatar.src = avatarUrl(replyToUser.avatar_template);
@@ -3129,8 +3226,10 @@
         replyTo.appendChild(replyToAvatar);
       }
       const replyToName = document.createElement('span');
-      replyToName.textContent = replyToUser?.name || replyToUser?.username
-        || `#${post.reply_to_post_number}`;
+      const replyToLabel = replyToUser?.name || replyToUser?.username;
+      replyToName.textContent = treeMode
+        ? `回复 #${post.reply_to_post_number}${replyToLabel ? ` · ${replyToLabel}` : ''}`
+        : replyToLabel || `#${post.reply_to_post_number}`;
       replyTo.appendChild(replyToName);
 
       let parentsBox = null;
@@ -3138,6 +3237,7 @@
       const setParentsExpanded = (expanded) => {
         if (parentsBox) parentsBox.hidden = !expanded;
         replyTo.classList.toggle('is-open', Boolean(parentsBox) && expanded);
+        replyTo.setAttribute('aria-expanded', String(Boolean(parentsBox) && expanded));
       };
       replyTo.addEventListener('click', async () => {
         if (parentsLoading) return;
@@ -3146,9 +3246,16 @@
           return;
         }
         parentsLoading = true;
+        const token = state.loadToken;
+        const topicId = state.currentTopicId;
+        replyTo.setAttribute('aria-busy', 'true');
         replyToArrow.textContent = '…';
         try {
-          const parents = await fetchReplyParents(post);
+          // 树状模式只预览直接父帖，避免深链一次展开几十条祖先。
+          const parents = treeMode
+            ? [parentPost || getTreePost(post.reply_to_post_number) || await fetchTreePost(post.reply_to_post_number)]
+            : await fetchReplyParents(post);
+          if (!article.isConnected || token !== state.loadToken || topicId !== state.currentTopicId) return;
           parentsBox = document.createElement('div');
           parentsBox.className = 'ld-preview-embedded-replies ld-preview-embedded-parents';
           for (const parent of parents) {
@@ -3158,13 +3265,16 @@
           article.insertBefore(parentsBox, article.querySelector(':scope > .cooked'));
           setParentsExpanded(true);
         } catch {
-          showToast('原帖加载失败');
+          if (article.isConnected && token === state.loadToken && topicId === state.currentTopicId) {
+            showToast('原帖加载失败');
+          }
         } finally {
           parentsLoading = false;
+          replyTo.setAttribute('aria-busy', 'false');
           replyToArrow.textContent = '↪';
         }
       });
-      header.appendChild(replyTo);
+      (treeMode ? article : header).appendChild(replyTo);
     }
     header.appendChild(meta);
 
@@ -3198,7 +3308,7 @@
     if (!treeMode && post.reply_count > 0) footer.appendChild(createRepliesToggle(post, article));
     footer.append(createBookmarkButton(post), createLikeButton(post), copyButton, moreWrap, replyButton);
 
-    article.append(header, body, footer);
+    article.append(body, footer);
     enhancePolls(article, post);
     return article;
   }
@@ -3233,56 +3343,30 @@
     if (!number || state.treeRepliesLoaded.has(number) || state.treeRepliesLoading.has(number)) return;
     const token = state.loadToken;
     const topicId = state.currentTopicId;
+    const isCurrent = () => token === state.loadToken && topicId === state.currentTopicId;
     state.treeRepliesLoading.add(number);
     renderTreeView({ anchorPostNumber: number });
     try {
-      let branchReplyIds = state.treeBranchReplyIds.get(post.id);
-      if (!branchReplyIds) {
-        const response = await fetchWithBackoff(`/posts/${post.id}/reply-ids.json`, {
-          credentials: 'same-origin',
-          headers: { Accept: 'application/json' },
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        if (token !== state.loadToken || topicId !== state.currentTopicId) return;
-        const entries = Array.isArray(data)
-          ? data.map((item) => ({
-            id: Number(item && typeof item === 'object' ? item.id : item),
-            level: Math.max(1, Number(item && typeof item === 'object' ? item.level : 1) || 1),
-          })).filter((item) => item.id)
-          : [];
-        branchReplyIds = entries.map((entry) => entry.id);
-        state.treeBranchReplyIds.set(post.id, branchReplyIds);
-        // reply-ids 是深度优先的 { id, level } 列表。按 level 还原父子关系，
-        // 每个节点只保存它的直接回复 ID，不再把整棵子树算作该层回复。
-        const directIds = new Map([[post.id, []]]);
-        const ancestors = [post.id];
-        for (const entry of entries) {
-          const level = Math.min(entry.level, ancestors.length);
-          const parentId = ancestors[level - 1] || post.id;
-          if (!directIds.has(parentId)) directIds.set(parentId, []);
-          directIds.get(parentId).push(entry.id);
-          if (!directIds.has(entry.id)) directIds.set(entry.id, []);
-          ancestors.length = level;
-          ancestors[level] = entry.id;
-          ancestors.length = level + 1;
-        }
-        for (const [postId, ids] of directIds) {
-          state.treeDirectReplyIds.set(postId, ids);
-        }
+      // 仅完整加载的节点由 treeRepliesLoaded 缓存；失败或不完整时重新请求索引。
+      const response = await fetchWithBackoff(`/posts/${post.id}/reply-ids.json`, {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!isCurrent()) return;
+      if (!Array.isArray(data)) throw new Error('回复索引格式异常');
+      const branchReplyIds = [...new Set(data.map((item) =>
+        Number(item && typeof item === 'object' ? item.id : item)))];
+      if (branchReplyIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+        throw new Error('回复索引格式异常');
       }
-      if (token !== state.loadToken || topicId !== state.currentTopicId) return;
-      const directReplyIds = state.treeDirectReplyIds.get(post.id) || [];
-      if (!branchReplyIds.length && Number(post.reply_count) > 0) {
-        throw new Error('回复 ID 列表暂时为空');
-      }
-      state.treeReplyIds.set(number, directReplyIds);
 
       // 用户点击一次后，一次请求取回这条分支的所有后代评论。
       const missingIds = branchReplyIds.filter((id) => !state.allPosts.has(id));
       if (missingIds.length) {
         const replies = await fetchPostsByIds(topicId, missingIds);
-        if (token !== state.loadToken || topicId !== state.currentTopicId) return;
+        if (!isCurrent()) return;
         for (const reply of replies) {
           if (reply?.id) state.allPosts.set(reply.id, reply);
         }
@@ -3290,15 +3374,78 @@
         if (unresolved.length) throw new Error(`有 ${unresolved.length} 条回复暂时不可用`);
       }
 
-      // 整条分支已加载：建立每层的直接回复索引，并自动展开所有层级。
-      const branchPosts = [post, ...branchReplyIds.map((id) => state.allPosts.get(id)).filter(Boolean)];
-      for (const branchPost of branchPosts) {
-        const branchNumber = Number(branchPost.post_number) || 0;
+      // reply-ids 按 ID 排序，level 不能用来推断父帖；以实际楼层关系建索引。
+      const childrenByParent = new Map();
+      const indexPost = (reply) => {
+        const parentNumber = Number(reply.reply_to_post_number);
+        if (!parentNumber || parentNumber === Number(reply.post_number)) return;
+        if (!childrenByParent.has(parentNumber)) childrenByParent.set(parentNumber, new Map());
+        childrenByParent.get(parentNumber).set(reply.id, reply);
+      };
+      for (const reply of state.allPosts.values()) indexPost(reply);
+      const branchPosts = new Map([post, ...branchReplyIds.map((id) => state.allPosts.get(id))]
+        .filter(Boolean).map((reply) => [reply.id, reply]));
+      const replyIdsByNumber = new Map();
+      const incomplete = new Set();
+      // Map 迭代也会处理备用接口新增的节点，补齐被多重引用过滤掉的后续对话。
+      for (const branchPost of branchPosts.values()) {
+        const branchNumber = Number(branchPost.post_number);
         if (!branchNumber) continue;
-        const childIds = state.treeDirectReplyIds.get(branchPost.id) || [];
+        const directReplies = new Map(childrenByParent.get(branchNumber));
+        for (const id of state.treeReplyIds.get(branchNumber) || []) {
+          const reply = state.allPosts.get(id);
+          if (reply && reply.id !== branchPost.id) directReplies.set(id, reply);
+        }
+        const expected = Number(branchPost.reply_count) || 0;
+        if (directReplies.size < expected) {
+          // replies 包含多重引用关系，每页最多 20 条；不能只取第一页。
+          let after = 0;
+          for (;;) {
+            const suffix = after ? `?after=${after}` : '';
+            const fallback = await fetchWithBackoff(`/posts/${branchPost.id}/replies.json${suffix}`, {
+              credentials: 'same-origin',
+              headers: { Accept: 'application/json' },
+            });
+            if (!fallback.ok) throw new Error(`HTTP ${fallback.status}`);
+            const replies = await fallback.json();
+            if (!isCurrent()) return;
+            if (!Array.isArray(replies) || replies.some((reply) =>
+              !Number.isSafeInteger(reply?.id) || reply.id <= 0
+              || !Number.isSafeInteger(reply.post_number) || reply.post_number <= 0)) {
+              throw new Error('回复列表格式异常');
+            }
+            for (const reply of replies) {
+              if (reply.id === branchPost.id) continue;
+              state.allPosts.set(reply.id, reply);
+              indexPost(reply);
+              directReplies.set(reply.id, reply);
+            }
+            if (replies.length < 20) break;
+            const nextAfter = Math.max(...replies.map((reply) => reply.post_number));
+            if (nextAfter <= after) throw new Error('回复分页未前进');
+            after = nextAfter;
+          }
+        }
+        replyIdsByNumber.set(branchNumber, [...directReplies.keys()]);
+        if (directReplies.size < expected) incomplete.add(branchNumber);
+        for (const reply of directReplies.values()) {
+          if (!branchPosts.has(reply.id)) branchPosts.set(reply.id, reply);
+        }
+      }
+
+      // 所有请求完成后再提交加载状态；空结果保留可重试提示。
+      // 加载期间若用户已收起分支或返回收起状态，只缓存数据，不重新展开。
+      const expandBranch = state.treeExpanded.has(number);
+      for (const [branchNumber, childIds] of replyIdsByNumber) {
         state.treeReplyIds.set(branchNumber, childIds);
-        state.treeRepliesLoaded.add(branchNumber);
-        if (childIds.length || Number(branchPost.reply_count) > 0) {
+        if (incomplete.has(branchNumber)) {
+          state.treeRepliesIncomplete.add(branchNumber);
+          state.treeRepliesLoaded.delete(branchNumber);
+        } else {
+          state.treeRepliesIncomplete.delete(branchNumber);
+          state.treeRepliesLoaded.add(branchNumber);
+        }
+        if (expandBranch && (childIds.length || incomplete.has(branchNumber))) {
           state.treeExpanded.add(branchNumber);
         }
       }
@@ -3317,7 +3464,166 @@
     }
   }
 
-  function renderTreeNode(post, childrenByParent, visited) {
+  function getTreePost(number) {
+    return [...state.allPosts.values()].find((post) => Number(post?.post_number) === Number(number));
+  }
+
+  async function fetchTreePost(number) {
+    const topicId = state.currentTopicId;
+    const token = state.loadToken;
+    const response = await fetch(`/posts/by_number/${topicId}/${number}.json`, {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const post = await response.json();
+    if (topicId !== state.currentTopicId || token !== state.loadToken) throw new Error('话题已切换');
+    if (!post?.id || Number(post.post_number) !== Number(number)) throw new Error('楼层暂不可用');
+    state.allPosts.set(post.id, post);
+    return post;
+  }
+
+  function treeDepthLimit() {
+    return (state.scroll?.clientWidth || state.width) < 520 ? 2 : 3;
+  }
+
+  function updateTreeLayout() {
+    state.treeDepthLimit = treeDepthLimit();
+    for (const node of state.list?.querySelectorAll('.ld-preview-tree-node') || []) {
+      node.classList.toggle('is-tree-flat', Number(node.dataset.depth) >= state.treeDepthLimit);
+    }
+  }
+
+  function captureTreePosition(anchorPostNumber = 0) {
+    const viewTop = state.scroll.getBoundingClientRect().top;
+    const anchor = anchorPostNumber
+      ? state.list.querySelector(`article[data-post-number="${anchorPostNumber}"]`)
+      : [...state.list.querySelectorAll('article.ld-preview-post')]
+        .find((article) => article.getBoundingClientRect().bottom >= viewTop + 4);
+    return {
+      scrollTop: state.scroll.scrollTop,
+      anchorPostNumber: Number(anchor?.dataset.postNumber) || 0,
+      anchorTop: anchor ? anchor.getBoundingClientRect().top - viewTop : 0,
+    };
+  }
+
+  function restoreTreePosition(position) {
+    const anchor = position.anchorPostNumber
+      ? state.list.querySelector(`article[data-post-number="${position.anchorPostNumber}"]`)
+      : null;
+    if (anchor) {
+      state.scroll.scrollTop += anchor.getBoundingClientRect().top
+        - state.scroll.getBoundingClientRect().top - position.anchorTop;
+    } else {
+      state.scroll.scrollTop = position.scrollTop;
+    }
+  }
+
+  function updateTreeFocusBar(byNumber = new Map([...state.allPosts.values()].map((post) => [Number(post.post_number), post]))) {
+    const bar = state.treeFocusBar;
+    if (!bar) return;
+    bar.hidden = state.viewMode !== 'tree' || Boolean(state.postFilter) || !state.treeFocusNumber;
+    if (bar.hidden) return;
+    bar.textContent = '';
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.textContent = '← 返回';
+    back.title = '返回上一级并恢复阅读位置';
+    back.addEventListener('click', () => restoreTreeFocus());
+    const all = document.createElement('button');
+    all.type = 'button';
+    all.textContent = '完整讨论';
+    all.addEventListener('click', () => restoreTreeFocus(true));
+    bar.append(back, all);
+    const chain = [];
+    const seen = new Set();
+    let post = byNumber.get(state.treeFocusNumber);
+    while (post && Number(post.post_number) !== 1 && !seen.has(Number(post.post_number))) {
+      seen.add(Number(post.post_number));
+      chain.unshift(post);
+      post = byNumber.get(Number(post.reply_to_post_number));
+    }
+    if (chain.length > 4) bar.append(document.createTextNode(' › …'));
+    for (const parent of chain.slice(-4)) {
+      bar.append(document.createTextNode(' › '));
+      const number = Number(parent.post_number);
+      if (number === state.treeFocusNumber) {
+        const label = document.createElement('span');
+        label.className = 'ld-preview-tree-focus-current';
+        label.textContent = `#${number}`;
+        label.setAttribute('aria-current', 'location');
+        bar.appendChild(label);
+      } else {
+        const link = document.createElement('button');
+        link.type = 'button';
+        link.textContent = `#${number}`;
+        link.title = `查看 #${number} 的讨论分支`;
+        link.addEventListener('click', () => focusTreeBranch(parent));
+        bar.appendChild(link);
+      }
+    }
+  }
+
+  function focusTreeBranch(post, { loadReplies = true } = {}) {
+    const number = Number(post.post_number);
+    if (!number || number === 1 || state.treeFocusNumber === number) return;
+    state.treeFocusHistory.push({
+      number: state.treeFocusNumber,
+      expanded: new Set(state.treeExpanded),
+      position: captureTreePosition(),
+    });
+    state.treeFocusNumber = number;
+    state.treeExpanded.add(number);
+    renderTreeView({ preserveScroll: false });
+    state.scroll.scrollTop = 0;
+    updateSentinels();
+    if (loadReplies && Number(post.reply_count) > 0 && !state.treeRepliesLoaded.has(number)) {
+      loadTreeReplies(post);
+    }
+  }
+
+  function restoreTreeFocus(all = false) {
+    const previous = all ? state.treeFocusHistory[0] : state.treeFocusHistory.pop();
+    if (all) state.treeFocusHistory = [];
+    state.treeFocusNumber = previous?.number || 0;
+    if (previous) state.treeExpanded = new Set(previous.expanded);
+    renderTreeView({ preserveScroll: false });
+    updateSentinels();
+    if (previous) restoreTreePosition(previous.position);
+    else state.scroll.scrollTop = 0;
+    schedulePaginationCheck();
+  }
+
+  async function jumpToTreePost(number) {
+    const token = state.loadToken;
+    const topicId = state.currentTopicId;
+    try {
+      const post = getTreePost(number) || await fetchTreePost(number);
+      if (token !== state.loadToken || topicId !== state.currentTopicId || state.viewMode !== 'tree') return;
+      const ancestors = new Set();
+      let parent = post;
+      while (parent && !ancestors.has(Number(parent.post_number))) {
+        ancestors.add(Number(parent.post_number));
+        parent = getTreePost(parent.reply_to_post_number);
+      }
+      if (state.treeFocusNumber && !ancestors.has(state.treeFocusNumber)) {
+        if (Number(number) === 1) restoreTreeFocus(true);
+        else focusTreeBranch(post, { loadReplies: false });
+      }
+      for (const ancestor of ancestors) {
+        if (ancestor !== Number(number)) state.treeExpanded.add(ancestor);
+      }
+      renderTreeView();
+      const article = state.list.querySelector(`article[data-post-number="${Number(number)}"]`);
+      if (article) {
+        state.scroll.scrollTop += article.getBoundingClientRect().top - state.scroll.getBoundingClientRect().top - 8;
+      }
+    } catch {
+      if (token === state.loadToken && topicId === state.currentTopicId) showToast('原楼层暂不可用，请稍后重试');
+    }
+  }
+
+  function renderTreeNode(post, childrenByParent, visited, byNumber, depth = 0) {
     const number = Number(post.post_number) || 0;
     if (visited.has(number)) return null;
     visited.add(number);
@@ -3325,16 +3631,34 @@
     const node = document.createElement('section');
     node.className = 'ld-preview-tree-node';
     node.dataset.postNumber = String(number);
-    const article = renderPost(post, { treeMode: true });
+    node.dataset.depth = String(depth);
+    node.classList.toggle('is-tree-flat', depth >= state.treeDepthLimit);
+    const article = renderPost(post, { treeMode: true, parentPost: byNumber.get(Number(post.reply_to_post_number)) });
     node.appendChild(article);
 
     const children = sortTreeSiblings([...(childrenByParent.get(number) || [])], childrenByParent);
+    const childIds = new Set(children.map((child) => child.id));
+    const referencedReplies = sortTreeSiblings((state.treeReplyIds.get(number) || [])
+      .filter((id) => !childIds.has(id) && id !== post.id)
+      .map((id) => state.allPosts.get(id)).filter(Boolean), childrenByParent);
     const repliesLoading = state.treeRepliesLoading.has(number);
-    const directReplyCount = Math.max(0, Number(post.reply_count) || 0);
-    // reply_count 为 0 的叶子节点不显示任何展开/收起控件。
+    const directReplyCount = Math.max(Number(post.reply_count) || 0, children.length + referencedReplies.length);
+    // 同时参考已加载的直接子节点，避免旧 reply_count 隐藏新到达的回复。
     const hasReplies = directReplyCount > 0;
     if (hasReplies) {
       const expanded = state.treeExpanded.has(number);
+      const controls = document.createElement('div');
+      controls.className = 'ld-preview-tree-actions';
+      const footer = article.querySelector(':scope > .ld-preview-post-footer');
+      footer.prepend(controls);
+      const focus = document.createElement('button');
+      focus.type = 'button';
+      focus.className = 'ld-preview-tree-focus';
+      focus.textContent = '只看此分支';
+      focus.title = `从 #${number} 开始阅读，返回后恢复原位置`;
+      focus.hidden = state.treeFocusNumber === number;
+      focus.addEventListener('click', () => focusTreeBranch(post));
+      controls.appendChild(focus);
       if (!expanded) {
         const expandButton = document.createElement('button');
         expandButton.type = 'button';
@@ -3352,8 +3676,7 @@
             renderTreeView({ anchorPostNumber: number });
           }
         });
-        const footer = article.querySelector(':scope > .ld-preview-post-footer');
-        if (footer) footer.insertBefore(expandButton, footer.firstChild);
+        controls.prepend(expandButton);
       }
 
       if (expanded) {
@@ -3365,12 +3688,20 @@
         const bindBranchControl = (control) => {
           control.title = `收起 #${number} 的回复`;
           control.setAttribute('aria-label', control.title);
+          control.setAttribute('aria-expanded', 'true');
           control.addEventListener('click', collapseBranch);
           control.addEventListener('pointerenter', () => node.classList.add('is-tree-rail-hovered'));
           control.addEventListener('pointerleave', () => node.classList.remove('is-tree-rail-hovered'));
           control.addEventListener('focus', () => node.classList.add('is-tree-rail-hovered'));
           control.addEventListener('blur', () => node.classList.remove('is-tree-rail-hovered'));
         };
+
+        const collapse = document.createElement('button');
+        collapse.type = 'button';
+        collapse.className = 'ld-preview-tree-collapse';
+        collapse.textContent = '− 收起分支';
+        bindBranchControl(collapse);
+        controls.prepend(collapse);
 
         // 父评论内部的上半段：圆形折叠点位于操作区下方，而非子树顶端。
         const stem = document.createElement('button');
@@ -3387,14 +3718,38 @@
         bindBranchControl(rail);
         childBox.appendChild(rail);
         for (const child of children) {
-          const childNode = renderTreeNode(child, childrenByParent, visited);
+          const childNode = renderTreeNode(child, childrenByParent, visited, byNumber, depth + 1);
           if (childNode) childBox.appendChild(childNode);
+        }
+        if (referencedReplies.length) {
+          // 引用多个楼层的回复保留原父帖，在此处预览，避免抢占另一分支的节点。
+          const references = document.createElement('div');
+          references.className = 'ld-preview-embedded-replies ld-preview-tree-references';
+          const label = document.createElement('div');
+          label.className = 'ld-preview-embedded-empty';
+          label.textContent = '引用此楼的回复';
+          references.appendChild(label);
+          for (const reply of referencedReplies) references.appendChild(renderEmbeddedReply(reply));
+          childBox.appendChild(references);
         }
         if (repliesLoading) {
           const loading = document.createElement('div');
           loading.className = 'ld-preview-embedded-empty';
           loading.textContent = '正在加载此分支…';
           childBox.appendChild(loading);
+        } else if (state.treeRepliesIncomplete.has(number)) {
+          const empty = document.createElement('div');
+          empty.className = 'ld-preview-embedded-empty';
+          empty.textContent = children.length || referencedReplies.length
+            ? '部分回复暂不可见，回复数量可能尚未同步。 '
+            : '暂时没有可见回复，回复数量可能尚未同步。 ';
+          const retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'ld-preview-post-action ld-preview-tree-retry';
+          retry.textContent = '重新加载';
+          retry.addEventListener('click', () => loadTreeReplies(post));
+          empty.appendChild(retry);
+          childBox.appendChild(empty);
         }
         node.appendChild(childBox);
       }
@@ -3404,20 +3759,9 @@
 
   function renderTreeView({ preserveScroll = true, anchorPostNumber = 0 } = {}) {
     if (!state.list) return;
-    const previousScrollTop = state.scroll.scrollTop;
-    let effectiveAnchorNumber = anchorPostNumber;
-    if (!effectiveAnchorNumber && preserveScroll) {
-      const scrollTop = state.scroll.getBoundingClientRect().top;
-      const firstVisible = [...state.list.querySelectorAll('article.ld-preview-post')]
-        .find((article) => article.getBoundingClientRect().bottom >= scrollTop + 4);
-      effectiveAnchorNumber = Number(firstVisible?.dataset.postNumber) || 0;
-    }
-    const previousAnchor = effectiveAnchorNumber
-      ? state.list.querySelector(`article[data-post-number="${effectiveAnchorNumber}"]`)
-      : null;
-    const previousAnchorTop = previousAnchor
-      ? previousAnchor.getBoundingClientRect().top - state.scroll.getBoundingClientRect().top
-      : null;
+    if (state.postFilter) return;
+    const position = preserveScroll || anchorPostNumber ? captureTreePosition(anchorPostNumber) : null;
+    state.treeDepthLimit = treeDepthLimit();
     const posts = [...state.allPosts.values()].filter((post) => post?.post_number != null);
     const byNumber = new Map(posts.map((post) => [Number(post.post_number), post]));
     const childrenByParent = new Map();
@@ -3441,18 +3785,23 @@
     // Discourse 中回复主题首帖的帖子属于顶层评论，不额外缩进一层。
     if (op && childrenByParent.has(1)) roots.push(...childrenByParent.get(1));
     const rootPosts = sortTreeSiblings(roots, childrenByParent);
+    const focusedPost = byNumber.get(state.treeFocusNumber);
+    if (state.treeFocusNumber && !focusedPost) {
+      state.treeFocusNumber = 0;
+      state.treeFocusHistory = [];
+    }
     const fragment = document.createDocumentFragment();
     const visited = new Set();
 
-    if (op) {
+    if (op && !focusedPost) {
       visited.add(1);
       const opWrap = document.createElement('div');
       opWrap.className = 'ld-preview-tree-op';
       opWrap.appendChild(renderPost(op, { treeMode: true }));
       fragment.appendChild(opWrap);
     }
-    for (const post of rootPosts) {
-      const node = renderTreeNode(post, childrenByParent, visited);
+    for (const post of focusedPost ? [focusedPost] : rootPosts) {
+      const node = renderTreeNode(post, childrenByParent, visited, byNumber);
       if (node) fragment.appendChild(node);
     }
     state.list.textContent = '';
@@ -3468,16 +3817,11 @@
       (count, id) => count + (state.allPosts.has(id) ? 1 : 0),
       0,
     );
-    if (state.viewNote) state.viewNote.textContent = `按需加载 ${loadedStreamCount}/${state.stream.length} 楼`;
-    if (previousAnchorTop != null) {
-      const nextAnchor = state.list.querySelector(`article[data-post-number="${effectiveAnchorNumber}"]`);
-      if (nextAnchor) {
-        const nextAnchorTop = nextAnchor.getBoundingClientRect().top - state.scroll.getBoundingClientRect().top;
-        state.scroll.scrollTop += nextAnchorTop - previousAnchorTop;
-      }
-    } else if (preserveScroll) {
-      state.scroll.scrollTop = previousScrollTop;
-    }
+    if (state.viewNote) state.viewNote.textContent = focusedPost
+      ? `#${state.treeFocusNumber} 分支 · 已显示 ${visited.size} 楼`
+      : `按需加载 ${loadedStreamCount}/${state.stream.length} 楼`;
+    updateTreeFocusBar(byNumber);
+    if (position) restoreTreePosition(position);
   }
 
   function renderOriginalView() {
@@ -3500,6 +3844,7 @@
 
   function renderFilteredView({ preserveScroll = false } = {}) {
     if (!state.postFilter || !state.list) return;
+    updateTreeFocusBar();
     hidePostMenu();
     const previousScrollTop = preserveScroll ? state.scroll.scrollTop : 0;
     const posts = state.stream
@@ -3625,6 +3970,7 @@
     const isTree = state.viewMode === 'tree';
     state.panel?.classList.toggle('is-tree-view', isTree);
     if (state.viewBar) state.viewBar.hidden = !isTree;
+    updateTreeFocusBar();
     if (state.treeButton) {
       state.treeButton.textContent = isTree ? '▤' : '🌳';
       state.treeButton.title = isTree ? '切换到原始视图' : '切换到树状评论';
@@ -3697,7 +4043,7 @@
   }
 
   function updateSentinels() {
-    if (state.postFilter) {
+    if (state.postFilter || (state.viewMode === 'tree' && state.treeFocusNumber)) {
       state.topSentinel.hidden = true;
       state.topSentinel.textContent = '';
       state.sentinel.hidden = true;
@@ -3723,6 +4069,7 @@
 
   function checkPaginationThresholds() {
     if (!state.open || state.postFilter || !state.scroll || !state.currentTopicId) return;
+    if (state.viewMode === 'tree' && state.treeFocusNumber) return;
     const distanceToBottom = Math.max(
       0,
       state.scroll.scrollHeight - state.scroll.clientHeight - state.scroll.scrollTop,
@@ -3784,6 +4131,10 @@
   }
 
   async function jumpToPostNumber(postNumber) {
+    if (state.viewMode === 'tree' && !state.postFilter) {
+      await jumpToTreePost(Number(postNumber));
+      return;
+    }
     if (!state.stream.length) return;
     const approx = Math.min(Math.max(Math.round(postNumber) - 1, 0), state.stream.length - 1);
     await jumpToIndex(approx);
@@ -3925,8 +4276,9 @@
     state.treeRepliesLoaded = new Set();
     state.treeRepliesLoading = new Set();
     state.treeReplyIds = new Map();
-    state.treeDirectReplyIds = new Map();
-    state.treeBranchReplyIds = new Map();
+    state.treeRepliesIncomplete = new Set();
+    state.treeFocusNumber = 0;
+    state.treeFocusHistory = [];
     state.loadingMore = false;
     state.loadingBefore = false;
     state.startIdx = 0;
@@ -4069,6 +4421,7 @@
 
   async function loadAfter() {
     if (state.postFilter || state.loadingMore || !state.currentTopicId) return;
+    if (state.viewMode === 'tree' && state.treeFocusNumber) return;
     const from = state.endIdx + 1;
     const ids = state.stream.slice(from, from + POSTS_PER_BATCH);
     if (!ids.length) return;
@@ -4100,6 +4453,7 @@
 
   async function loadBefore() {
     if (state.postFilter || state.loadingBefore || !state.currentTopicId || state.startIdx <= 0) return;
+    if (state.viewMode === 'tree' && state.treeFocusNumber) return;
     const start = Math.max(0, state.startIdx - POSTS_PER_BATCH);
     const ids = state.stream.slice(start, state.startIdx);
     if (!ids.length) return;

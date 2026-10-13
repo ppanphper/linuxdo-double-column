@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>正式脚本 · 深层回复回归验证</title>
+  <style>
+    :root { color-scheme: dark; --primary:#dededb; --secondary:#212323; --primary-low:#363b38; --primary-low-mid:#4b5350; --primary-medium:#a4aaa6; --tertiary:#91cbb0; }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; background:#141717; color:var(--primary); font:14px/1.5 system-ui,sans-serif; }
+    h1 { font-size:24px; margin:0 0 8px; }
+    p { color:#a4aaa6; }
+    .test-controls { display:flex; gap:8px; flex-wrap:wrap; margin:16px 0; }
+    .test-controls button,.test-controls select { padding:7px 10px; background:#29302d; border:1px solid #4b5350; border-radius:6px; color:var(--primary); font:inherit; }
+    #test-status { color:#91cbb0; margin:12px 0; }
+    #test-results { max-height:240px; overflow:auto; font-size:12px; }
+    #fixture { max-width:1000px; margin:auto; }
+  </style>
+</head>
+<body>
+  <h1>正式脚本 · 深层回复验证</h1>
+  <p>直接使用正式 userscript 的样式和渲染函数；API 使用本地模拟数据。包含主帖 + 100 层连续回复。</p>
+  <div class="test-controls">
+    <button id="run-tests">运行回归验证</button>
+    <button id="show-chain">100 层单链</button>
+    <button id="show-branches">嵌套分叉</button>
+    <button id="jump-last">定位最深楼层</button>
+    <label>面板宽度 <select id="test-width"><option>380</option><option>420</option><option selected>600</option><option>900</option></select></label>
+  </div>
+  <div id="test-status" role="status">正在载入正式脚本…</div>
+  <details><summary>验证记录</summary><ol id="test-results"></ol></details>
+  <div id="fixture"></div>
+  <script src="tree-preview.js"></script>
+</body>
+</html>
