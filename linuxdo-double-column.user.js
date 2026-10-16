@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.16.1
-// @description  在 Linux.do 话题列表中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/话题与楼层收藏/投票/时间线及阅读时长上报）
+// @version      0.17.0
+// @description  在 Linux.do 话题列表和搜索结果中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/话题与楼层收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
 // @supportURL   https://github.com/ppanphper/linuxdo-double-column/issues
@@ -377,11 +377,37 @@
       }
 
       body.ld-double-column-open #main-outlet > .container,
+      body.ld-double-column-open #main-outlet .search-container,
       body.ld-double-column-open #main-outlet .topic-list,
       body.ld-double-column-open #main-outlet .topic-list-body {
         width: 100% !important;
         max-width: none !important;
         min-width: 0 !important;
+      }
+
+      body.ld-double-column-open .search-container .fps-topic {
+        flex: 1;
+        min-width: 0;
+      }
+
+      body.ld-double-column-open .search-container .fps-result .topic {
+        grid-template-columns: auto minmax(0, 1fr);
+      }
+
+      body.ld-double-column-open .search-container .search-link,
+      body.ld-double-column-open .search-container .topic-title {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      body.ld-double-column-open .search-container .search-bar {
+        flex-wrap: wrap;
+      }
+
+      body.ld-double-column-open .search-container .search-bar__field,
+      body.ld-double-column-open .search-container input.search-query {
+        min-width: 0;
+        max-width: 100%;
       }
 
       body.ld-double-column-fullscreen #${PANEL_ID} {
@@ -4038,8 +4064,10 @@
       return;
     }
     const previousHeight = state.scroll.scrollHeight;
+    const previousScrollTop = state.scroll.scrollTop;
     state.list.insertBefore(fragment, state.list.firstChild);
-    state.scroll.scrollTop += state.scroll.scrollHeight - previousHeight;
+    // 插入前保存位置，避免浏览器的滚动锚定与手动补偿叠加，推离搜索命中楼层。
+    state.scroll.scrollTop = previousScrollTop + state.scroll.scrollHeight - previousHeight;
   }
 
   function updateSentinels() {
@@ -4153,6 +4181,31 @@
     if (best) {
       const index = state.streamIndex.get(Number(best.dataset.postId));
       if (index != null) scrollToStreamIndex(index);
+    }
+  }
+
+  async function jumpToLinkedPost(url) {
+    const number = floorFromUrl(url);
+    if (!number) return;
+    const token = state.loadToken;
+    const topicId = state.currentTopicId;
+    try {
+      // 搜索结果可能命中首批数据之外的楼层；楼层号也不一定等于 stream 下标 + 1。
+      const post = getTreePost(number) || await fetchTreePost(number);
+      if (token !== state.loadToken || url !== state.currentUrl) return;
+      if (state.viewMode === 'tree') {
+        await jumpToTreePost(number);
+      } else {
+        const index = state.streamIndex.get(post.id);
+        if (index == null) throw new Error('楼层暂不可用');
+        await jumpToIndex(index);
+      }
+      // 补载楼层期间再次点击同话题时，完成当前请求后继续定位最新结果。
+      if (state.open && state.currentTopicId === topicId && state.currentUrl !== url) {
+        jumpToLinkedPost(state.currentUrl);
+      }
+    } catch {
+      if (token === state.loadToken && url === state.currentUrl) showToast('原楼层暂不可用，请稍后重试');
     }
   }
 
@@ -4394,12 +4447,14 @@
       state.panel.classList.remove('is-loading');
       setTopicLoadFailed(false);
       setStatus('');
-      renderTopic(data, topicUrl);
-      const floor = floorFromUrl(topicUrl);
-      if (state.viewMode === 'tree') {
+      // 同一话题加载期间可能点击另一个搜索结果，使用最后一次点击的楼层。
+      const targetUrl = state.currentUrl;
+      renderTopic(data, targetUrl);
+      const floor = floorFromUrl(targetUrl);
+      if (floor >= 1) {
+        jumpToLinkedPost(targetUrl);
+      } else if (state.viewMode === 'tree') {
         // 树状视图按分支或热度排列，不自动套用原始时间线的续读位置。
-      } else if (floor > 1) {
-        jumpToIndex(Math.min(floor - 1, state.stream.length - 1));
       } else {
         const lastRead = state.topicMeta.lastReadPostNumber || 0;
         if (lastRead > 1) {
@@ -4803,8 +4858,8 @@
       state.open = true;
       state.fullscreen = false;
       state.savedScrollY = window.scrollY;
-      state.parentUrl = location.href;
-      state.historyActive = !options.fromHistory;
+      state.parentUrl = (options.fromHistory && history.state?.ldPreviewBase) || location.href;
+      state.historyActive = !options.fromHistory || Boolean(history.state?.ldDoubleColumn);
       document.body.classList.add('ld-double-column-open');
       document.body.classList.remove('ld-double-column-fullscreen');
       if (!options.fromHistory) setPreviewHistory(normalizedUrl, false);
@@ -4821,8 +4876,8 @@
         return;
       }
       const floor = floorFromUrl(normalizedUrl);
-      if (floor >= 1 && state.stream.length) {
-        jumpToIndex(Math.min(floor - 1, state.stream.length - 1));
+      if (floor >= 1 && state.stream.length && !state.panel.classList.contains('is-loading')) {
+        jumpToLinkedPost(normalizedUrl);
       }
       return;
     }
@@ -5177,12 +5232,17 @@
     state.hoverLink = null;
   }
 
+  function previewLinkFromTarget(target) {
+    const link = target && typeof target.closest === 'function' ? target.closest('a[href]') : null;
+    if (!link || link.closest(`#${PANEL_ID}`)) return null;
+    // 搜索页使用 search-link；只接管结果标题，保留用户、分类、标签等原生导航。
+    return link.matches('a.title.raw-topic-link, .search-container .fps-result a.search-link')
+      || link.closest('tr.topic-list-item') ? link : null;
+  }
+
   function handleTopicPointerOver(event) {
     if (window.innerWidth <= MOBILE_BREAKPOINT) return;
-    const rawTarget = event.target;
-    const link = rawTarget && typeof rawTarget.closest === 'function'
-      ? rawTarget.closest('a.title.raw-topic-link[href]')
-      : null;
+    const link = previewLinkFromTarget(event.target);
     if (!link || link === state.hoverLink) return;
 
     const topicUrl = normalizeTopicUrl(link.href);
@@ -5208,12 +5268,8 @@
   function handleTopicClick(event) {
     if (isModifiedClick(event) || event.defaultPrevented) return;
     clearHoverPreload();
-    const rawTarget = event.target;
-    const target = rawTarget && typeof rawTarget.closest === 'function'
-      ? rawTarget.closest('a[href]')
-      : null;
-    if (!target || target.closest(`#${PANEL_ID}`)) return;
-    if (!target.matches('a.title.raw-topic-link') && !target.closest('tr.topic-list-item')) return;
+    const target = previewLinkFromTarget(event.target);
+    if (!target) return;
 
     const topicUrl = normalizeTopicUrl(target.href);
     if (!topicUrl) return;

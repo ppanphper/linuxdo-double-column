@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>正式脚本 · 搜索页回归验证</title>
+  <style>
+    :root { --primary:#202124; --secondary:#fff; --primary-low:#e2e5e9; --primary-medium:#6b7280; --tertiary:#176fa1; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f6f7f9; color:var(--primary); font:15px/1.6 system-ui,sans-serif; }
+    .d-header { height:60px; padding:14px 24px; background:#fff; border-bottom:1px solid #ddd; }
+    #main-outlet-wrapper { max-width:1200px; margin:auto; }
+    #main-outlet { padding:20px; }
+    h1 { font-size:22px; margin:0 0 12px; }
+    a { color:var(--tertiary); }
+    button,input { font:inherit; padding:6px 10px; }
+    #test-status { color:#126637; font-weight:600; }
+    #test-results { max-height:240px; overflow:auto; font-size:12px; }
+    .search-header,.search-results { padding:16px 10%; }
+    .search-bar { display:flex; gap:8px; }
+    .search-bar__field { display:flex; flex:1 1 60%; }
+    input.search-query { width:auto; flex:1; }
+    .fps-result { display:flex; max-width:100%; margin:24px 0; word-break:break-word; }
+    .author { margin-right:16px; flex-shrink:0; }
+    .avatar { display:block; width:40px; height:40px; border-radius:50%; background:#dce8e1; text-align:center; line-height:40px; }
+    .topic { display:grid; grid-template-areas:'bulk-select title' 'meta meta'; grid-template-columns:auto 1fr; }
+    .search-link { display:flex; grid-area:title; text-decoration:none; }
+    .topic-title { font-size:18px; }
+    .search-category { grid-area:meta; display:flex; gap:12px; flex-wrap:wrap; }
+    .blurb { color:var(--primary-medium); margin-top:8px; }
+    .extra-links { display:flex; flex-wrap:wrap; gap:10px; margin:20px 0; }
+    @media(max-width:780px) { .search-header,.search-results { padding:8px 0; } }
+  </style>
+</head>
+<body class="search-page">
+  <header class="d-header">LINUX DO · 本地搜索页验证</header>
+  <div id="main-outlet-wrapper"><main id="main-outlet">
+    <h1>搜索结果双栏预览</h1>
+    <p>使用正式脚本与 Discourse 搜索结果结构；全部 API 为本地模拟数据。</p>
+    <button id="run-tests">运行回归验证</button>
+    <div id="test-status" role="status">正在载入正式脚本…</div>
+    <details><summary>验证记录</summary><ol id="test-results"></ol></details>
+    <section class="search-container">
+      <div class="search-header"><div class="search-bar">
+        <div class="search-bar__field"><input class="search-query" aria-label="搜索词" value="双栏预览 in:all order:latest"></div>
+        <button type="button">搜索</button>
+      </div></div>
+      <div class="search-advanced"><div class="search-results">
+        <p>搜索结果 · 保留搜索词和筛选条件</p>
+        <div class="fps-result-entries" role="list">
+          <div class="fps-result" role="listitem">
+            <div class="author"><a id="user-link" href="/u/test"><span class="avatar">青</span></a></div>
+            <div class="fps-topic" data-topic-id="100">
+              <div class="topic">
+                <a id="first-result" class="search-link" href="/t/search-demo/100/1?u=test"><span class="topic-title">在搜索页打开<mark>双栏预览</mark></span></a>
+                <div class="search-category"><a id="category-link" href="/c/general/1">技术交流</a><a id="tag-link" href="/tag/javascript">javascript</a></div>
+              </div>
+              <div class="blurb container">点击标题保留搜索结果，在右侧阅读命中的帖子。</div>
+            </div>
+          </div>
+          <div class="fps-result" role="listitem"><div class="author"><span class="avatar">星</span></div><div class="fps-topic"><div class="topic">
+            <a id="reply-result" class="search-link" href="/t/search-demo/100/4"><span class="topic-title">同一话题中命中第 4 楼的回复</span></a>
+          </div><div class="blurb container">楼层存在空缺时，仍应定位实际命中的回复。</div></div></div>
+          <div class="fps-result" role="listitem"><div class="author"><span class="avatar">木</span></div><div class="fps-topic"><div class="topic">
+            <a id="deep-result" class="search-link" href="/t/search-demo/200/35"><span class="topic-title">在树状视图中加载第 35 楼 · very_long_search_result_title_without_spaces_abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz</span></a>
+          </div><div class="blurb container">命中首批之外的回复时按需加载，长标题应在左栏内换行。</div></div></div>
+        </div>
+      </div></div>
+    </section>
+    <div class="extra-links">
+      <a id="outside-search" class="search-link" href="/t/search-demo/300/1">搜索区外普通链接</a>
+      <a id="legacy-title" class="title raw-topic-link" href="/t/search-demo/300">原列表标题</a>
+    </div>
+    <table><tbody><tr class="topic-list-item"><td><a id="legacy-reply" href="/t/search-demo/300/4">原列表回复链接</a><a id="legacy-user" href="/u/test">用户</a></td></tr></tbody></table>
+  </main></div>
+  <script src="search-preview.js"></script>
+</body>
+</html>
