@@ -2739,6 +2739,19 @@
     }
   }
 
+  // 与 Discourse resolveShareUrl 一致：登录且站点开启徽章和分享链接用户名时附加 ?u=，访问计入分享徽章。
+  function shareUrlSuffix() {
+    try {
+      const preloaded = JSON.parse(document.getElementById('data-preloaded')?.textContent || '{}');
+      const user = preloaded.currentUser ? JSON.parse(preloaded.currentUser) : null;
+      const settings = preloaded.siteSettings ? JSON.parse(preloaded.siteSettings) : {};
+      if (!user?.username || !settings.enable_badges || !settings.allow_username_in_share_links) return '';
+      return `?u=${encodeURIComponent(user.username.toLowerCase())}`;
+    } catch {
+      return '';
+    }
+  }
+
   function copyPostLink(post) {
     return copyLink(`${location.origin}/t/topic/${state.currentTopicId}/${post.post_number}`);
   }
@@ -2752,7 +2765,8 @@
     copyLink(`${location.origin}/t/${slug}/${topicId}`);
   }
 
-  async function copyLink(url) {
+  async function copyLink(link) {
+    const url = link + shareUrlSuffix();
     try {
       await navigator.clipboard.writeText(url);
       showToast('链接已复制');

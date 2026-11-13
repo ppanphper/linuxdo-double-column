@@ -49,7 +49,9 @@
 
 # 复制话题链接
 
-- 标题栏收藏按钮右侧的 🔗 复制 `https://linux.do/t/<slug>/<id>`，不带楼层和 `?u=`，与楼层复制链接保持一致。
+- 标题栏收藏按钮右侧的 🔗 复制 `https://linux.do/t/<slug>/<id>`，不带楼层。
+- 话题与楼层链接都按 Discourse [resolveShareUrl](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/helpers/share-url.js) 附加 `?u=<小写用户名>`：仅在已登录且 `enable_badges`、`allow_username_in_share_links` 均开启时附加。
+- 用户名与站点设置在点击时从 `#data-preloaded` 的 `currentUser`、`siteSettings` 读取，不硬编码；Discourse 启动后该元素仍保留，登录状态变化会整页刷新。该数据只有 `username`，需自行转为小写。2026-11-13 核对 linux.do：两个设置均开启，数据约 625KB，解析耗时数毫秒，因此不缓存。
 - slug 取自话题 JSON。加载中或加载失败时 `topicMeta` 仍属于上一个话题，此时只用当前话题 ID 和 `topic` 占位，打开后由 Discourse 重定向到规范地址。
 - 复制成功和失败沿用现有 toast；剪贴板 API 不可用时退回 `execCommand('copy')`。
-- `tests/search-preview.html` 验证正常复制及加载中切换话题时复制新话题。
+- `tests/search-preview.html` 验证话题与楼层链接的分享参数、设置关闭和未登录时不附加，以及加载中切换话题时复制新话题。
