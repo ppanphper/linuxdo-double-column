@@ -31,10 +31,11 @@
   const CACHE_TTL = 5 * 60 * 1000;
   const HOVER_DELAY = 80;
   const MAX_PREFETCH = 4;
-  // 头像菜单与通知页共用 Discourse MenuItem；编辑通知保留原生跳转，以便查看修订记录。
-  const NOTIFICATION_LINK_SELECTOR = [
+  // 头像菜单（通知、私信、书签）与通知页共用 Discourse MenuItem；编辑通知保留原生跳转，以便查看修订记录。
+  const MENU_ITEM_LINK_SELECTOR = [
     '.user-menu .quick-access-panel li.notification:not(.edited) > a',
     '.user-menu .quick-access-panel li.message > a',
+    '.user-menu .quick-access-panel li.bookmark > a',
     '.user-notifications-list li.notification:not(.edited) > a',
   ].join(', ');
   const LIKE_ACTION_ID = 2;
@@ -2165,6 +2166,7 @@
 
     const topicBookmarkButton = createButton('☆', '收藏话题（书签）', toggleTopicBookmark);
     topicBookmarkButton.classList.add('ld-preview-bookmark');
+    const copyTopicButton = createButton('🔗', '复制话题链接', copyTopicLink);
     const replyButton = createButton('✎', '回复主题', () => {
       if (state.currentTopicId) openComposer(null, '');
     });
@@ -2296,7 +2298,7 @@
     composerActions.append(composerCancel, composerSend);
     composer.append(composerTarget, composerTools, composerInput, composerFileInput, composerPreview, composerError, composerActions);
 
-    toolbar.append(heading, topicBookmarkButton, replyButton, treeButton, originalButton, refreshButton, fullscreenButton, closeButton);
+    toolbar.append(heading, topicBookmarkButton, copyTopicButton, replyButton, treeButton, originalButton, refreshButton, fullscreenButton, closeButton);
     scroll.append(topSentinel, list, sentinel, replyBar);
     content.append(scroll, timeline, status, toast);
     panel.append(resizer, toolbar, viewBar, treeFocusBar, content, composer);
@@ -2737,8 +2739,20 @@
     }
   }
 
-  async function copyPostLink(post) {
-    const url = `${location.origin}/t/topic/${state.currentTopicId}/${post.post_number}`;
+  function copyPostLink(post) {
+    return copyLink(`${location.origin}/t/topic/${state.currentTopicId}/${post.post_number}`);
+  }
+
+  function copyTopicLink() {
+    const topicId = state.currentTopicId;
+    if (!topicId) return;
+    // 加载中或加载失败时 topicMeta 仍是上一个话题，只在匹配时使用它的 slug。
+    const meta = state.topicMeta;
+    const slug = meta && String(meta.topicId) === String(topicId) && meta.slug ? meta.slug : 'topic';
+    copyLink(`${location.origin}/t/${slug}/${topicId}`);
+  }
+
+  async function copyLink(url) {
     try {
       await navigator.clipboard.writeText(url);
       showToast('链接已复制');
@@ -4346,6 +4360,7 @@
     if (!Array.isArray(data.bookmarks)) data.bookmarks = [];
     state.topicMeta = {
       topicId: data.id || Number(state.currentTopicId),
+      slug: data.slug || '',
       bookmarks: data.bookmarks,
       createdAt: data.created_at || '',
       lastPostedAt: data.last_posted_at || '',
@@ -5242,7 +5257,7 @@
     const link = target && typeof target.closest === 'function' ? target.closest('a[href]') : null;
     if (!link || link.closest(`#${PANEL_ID}`)) return null;
     // 搜索页使用 search-link；只接管结果标题，保留用户、分类、标签等原生导航。
-    return link.matches(`a.title.raw-topic-link, .search-container .fps-result a.search-link, ${NOTIFICATION_LINK_SELECTOR}`)
+    return link.matches(`a.title.raw-topic-link, .search-container .fps-result a.search-link, ${MENU_ITEM_LINK_SELECTOR}`)
       || link.closest('tr.topic-list-item') ? link : null;
   }
 
@@ -5285,8 +5300,8 @@
     if (!topicUrl) return;
 
     event.preventDefault();
-    if (target.matches(NOTIFICATION_LINK_SELECTOR)) {
-      // 通知项随后仍由站点标记已读；默认行为已取消时站点跳过路由，也不会关闭菜单。
+    if (target.matches(MENU_ITEM_LINK_SELECTOR)) {
+      // 站点随后仍处理菜单项点击并标记通知已读；默认行为已取消时它跳过路由，也不会关闭菜单。
       if (target.closest('.user-menu')) setTimeout(closeUserMenu, 0);
     } else {
       event.stopImmediatePropagation();

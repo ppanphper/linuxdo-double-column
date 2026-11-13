@@ -28,10 +28,10 @@
 
 ## 目标与入口
 
-点击头像菜单或通知页 `/u/<用户名>/notifications` 中指向话题的通知时，在右侧预览面板打开并定位到通知楼层，保留当前页面。
+点击头像菜单或通知页 `/u/<用户名>/notifications` 中指向话题的通知、私信和书签时，在右侧预览面板打开并定位到对应楼层，保留当前页面。
 
-- 两处都由 Discourse `MenuItem` 渲染为 `li.notification > a`；头像菜单的私信标签页为 `li.message > a`。选择器并入现有链接识别函数，点击和悬停预取共用。
-- 只接管同源话题 URL。徽章、关注、群组收件箱等非话题通知，以及书签、审核项保持原生跳转。
+- 两处都由 Discourse `MenuItem` 渲染为 `li.notification > a`；头像菜单的私信、书签标签页分别为 `li.message > a`、`li.bookmark > a`，书签链接为完整 URL。选择器并入现有链接识别函数，点击和悬停预取共用。
+- 只接管同源话题 URL。徽章、关注、群组收件箱等非话题通知，聊天消息书签及审核项保持原生跳转。
 - 编辑通知 `li.edited` 保持原生跳转：站点会在打开话题后弹出修订记录，预览面板不提供修订对比。
 - 通知页的回复、提及等子页属于用户动态流，不在本次范围。
 
@@ -46,3 +46,10 @@
 - 结构与行为来源：[MenuItem](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/components/user-menu/menu-item.gjs)、[通知项点击](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/lib/user-menu/notification-item.js)、[基础点击](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/lib/user-menu/base-item.js)、[wantsNewWindow](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/lib/intercept-click.js)、[服务端清除](https://github.com/discourse/discourse/blob/main/app/controllers/application_controller.rb)、[通知页模板](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/templates/user/notifications-index.gjs)。
 - 2026-11-13 只读核对 linux.do（Discourse 2026.11.0-latest）通知页：60 条通知均为 `li.notification > a` 且指向话题 URL；左栏 680px 时无可见溢出，424px 时个人资料头部按钮会被面板遮挡，属用户页原有布局。
 - 头像菜单打开会把通知计为已查看，未在线上打开；菜单 DOM 依据源码及 `tests/notification-preview.html` 验证。
+
+# 复制话题链接
+
+- 标题栏收藏按钮右侧的 🔗 复制 `https://linux.do/t/<slug>/<id>`，不带楼层和 `?u=`，与楼层复制链接保持一致。
+- slug 取自话题 JSON。加载中或加载失败时 `topicMeta` 仍属于上一个话题，此时只用当前话题 ID 和 `topic` 占位，打开后由 Discourse 重定向到规范地址。
+- 复制成功和失败沿用现有 toast；剪贴板 API 不可用时退回 `execCommand('copy')`。
+- `tests/search-preview.html` 验证正常复制及加载中切换话题时复制新话题。

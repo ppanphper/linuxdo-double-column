@@ -70,7 +70,11 @@
       ['menu-group', 'notification unread group-message-summary', '/u/test/messages/group/staff', '', '群组收件箱有新消息'],
     ],
     messages: [['menu-message', 'message unread', '/t/notify-demo/200/35', '水', '私信 · 首批之外的未读楼层']],
-    bookmarks: [['menu-bookmark', 'bookmark', '/t/notify-demo/100/9', '', '书签']],
+    bookmarks: [
+      // bookmarkable_url 为完整 URL。
+      ['menu-bookmark', 'bookmark', `${location.origin}/t/notify-demo/500/9`, '', '楼层书签'],
+      ['menu-chat-bookmark', 'bookmark', '/chat/c/general/1/123', '', '聊天消息书签'],
+    ],
     review: [['menu-review', 'reviewable pending', '/review/1', '', '待审核']],
   };
   let menuOpen = false, menuTab = 'all-notifications', toggleClicks = 0;
@@ -205,8 +209,14 @@
       history.back(); await until(() => !state.open);
       assert(location.href === originalUrl, '后退没有还原通知页 URL');
     });
-    await test('非话题通知、编辑通知、书签与审核项保持原生跳转', async () => {
-      for (const [tab, id] of [['all-notifications','menu-edited'], ['all-notifications','menu-badge'], ['all-notifications','menu-group'], ['bookmarks','menu-bookmark'], ['review','menu-review']]) {
+    await test('书签标签页按楼层打开预览并关闭菜单', async () => {
+      await openMenu('bookmarks'); click('#menu-bookmark');
+      assert(!routed.includes('menu-bookmark'), '书签项仍执行了路由跳转');
+      await loaded(500); await until(() => state.currentPostNumber === 9);
+      await until(() => !$('.user-menu')); await close();
+    });
+    await test('非话题通知、编辑通知、聊天书签与审核项保持原生跳转', async () => {
+      for (const [tab, id] of [['all-notifications','menu-edited'], ['all-notifications','menu-badge'], ['all-notifications','menu-group'], ['bookmarks','menu-chat-bookmark'], ['review','menu-review']]) {
         await openMenu(tab); click(`#${id}`);
         assert(routed.includes(id), `${id} 被错误拦截`); await until(() => !$('.user-menu'));
       }
