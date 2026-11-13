@@ -23,3 +23,35 @@
 - `tests/search-preview.html` 运行正式事件、历史和渲染逻辑；API 全部本地模拟，不修改线上数据。
 - `tests/tree-preview.html` 保留原有深层回复回归。
 - 当前内置浏览器访问 Linux.do 搜索页跳转登录页，线上登录态及站点定制主题尚需实际安装验证。
+
+# 通知双栏预览
+
+## 目标与入口
+
+点击头像菜单或通知页 `/u/<用户名>/notifications` 中指向话题的通知、私信和书签时，在右侧预览面板打开并定位到对应楼层，保留当前页面。
+
+- 两处都由 Discourse `MenuItem` 渲染为 `li.notification > a`；头像菜单的私信、书签标签页分别为 `li.message > a`、`li.bookmark > a`，书签链接为完整 URL。选择器并入现有链接识别函数，点击和悬停预取共用。
+- 只接管同源话题 URL。徽章、关注、群组收件箱等非话题通知，聊天消息书签及审核项保持原生跳转。
+- 编辑通知 `li.edited` 保持原生跳转：站点会在打开话题后弹出修订记录，预览面板不提供修订对比。
+- 通知页的回复、提及等子页属于用户动态流，不在本次范围。
+
+## 已读与菜单
+
+- 站点在通知项冒泡阶段标记已读：更新本地状态，写入 `cn` cookie，下一次请求由服务端清除。随后 `wantsNewWindow` 发现默认行为已取消，跳过路由和关闭菜单。
+- 因此通知链接只调用 `preventDefault`，不阻止事件传播；其他入口仍使用 `stopImmediatePropagation`。
+- 头像菜单内的点击在事件结束后检测 `.user-menu.revamped`，菜单仍在时点击 `#toggle-current-user` 关闭。菜单关闭时线上不渲染 `aria-expanded`，不能作为判断依据。
+
+## 验证依据
+
+- 结构与行为来源：[MenuItem](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/components/user-menu/menu-item.gjs)、[通知项点击](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/lib/user-menu/notification-item.js)、[基础点击](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/lib/user-menu/base-item.js)、[wantsNewWindow](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/lib/intercept-click.js)、[服务端清除](https://github.com/discourse/discourse/blob/main/app/controllers/application_controller.rb)、[通知页模板](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/templates/user/notifications-index.gjs)。
+- 2026-11-13 只读核对 linux.do（Discourse 2026.11.0-latest）通知页：60 条通知均为 `li.notification > a` 且指向话题 URL；左栏 680px 时无可见溢出，424px 时个人资料头部按钮会被面板遮挡，属用户页原有布局。
+- 头像菜单打开会把通知计为已查看，未在线上打开；菜单 DOM 依据源码及 `tests/notification-preview.html` 验证。
+
+# 复制话题链接
+
+- 标题栏收藏按钮右侧的 🔗 复制 `https://linux.do/t/<slug>/<id>`，不带楼层。
+- 话题与楼层链接都按 Discourse [resolveShareUrl](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/helpers/share-url.js) 附加 `?u=<小写用户名>`：仅在已登录且 `enable_badges`、`allow_username_in_share_links` 均开启时附加。
+- 用户名与站点设置在点击时从 `#data-preloaded` 的 `currentUser`、`siteSettings` 读取，不硬编码；Discourse 启动后该元素仍保留，登录状态变化会整页刷新。该数据只有 `username`，需自行转为小写。2026-11-13 核对 linux.do：两个设置均开启，数据约 625KB，解析耗时数毫秒，因此不缓存。
+- slug 取自话题 JSON。加载中或加载失败时 `topicMeta` 仍属于上一个话题，此时只用当前话题 ID 和 `topic` 占位，打开后由 Discourse 重定向到规范地址。
+- 复制成功和失败沿用现有 toast；剪贴板 API 不可用时退回 `execCommand('copy')`。
+- `tests/search-preview.html` 验证话题与楼层链接的分享参数、设置关闭和未登录时不附加，以及加载中切换话题时复制新话题。

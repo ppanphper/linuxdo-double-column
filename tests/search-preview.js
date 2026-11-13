@@ -13,7 +13,8 @@
   }
   const settle = async () => { await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); };
   let requests = [], delayTopic = '', releaseTopic = null, failTopic = '', delayBatch = '', releaseBatch = null;
-  const nativeClicks = [];
+  const nativeClicks = [], copied = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{ writeText:async text => { copied.push(text); } } });
   function postsFor(id) {
     return Array.from({ length:60 }, (_, i) => ({
       id:Number(id) * 1000 + i + 1, post_number:i < 2 ? i + 1 : i + 2,
@@ -33,7 +34,7 @@
       if (id === delayTopic) await new Promise(resolve => { releaseTopic = resolve; });
       if (id === failTopic) return Response.json({}, { status:500 });
       const posts = postsFor(id);
-      return Response.json({ id:Number(id), title:`搜索预览 · 话题 ${id}`, highest_post_number:61,
+      return Response.json({ id:Number(id), slug:'search-demo', title:`搜索预览 · 话题 ${id}`, highest_post_number:61,
         last_read_post_number:12, post_stream:{ posts:posts.slice(0,20), stream:posts.map(post => post.id) } });
     }
     const batch = url.pathname.match(/^\/t\/(\d+)\/posts\.json$/);
@@ -175,6 +176,38 @@
     await test('原话题列表标题及回复链接保持可用', async () => {
       click('#legacy-title'); await loaded(300); await until(() => state.currentPostNumber === 13);
       click('#legacy-reply'); await until(() => state.currentPostNumber === 4);
+    });
+    await test('工具栏与楼层复制链接附带当前用户的分享参数', async () => {
+      const button = state.panel.querySelector('.ld-preview-action[aria-label="复制话题链接"]'), before = copied.length;
+      button.click(); await until(() => copied.length === before + 1);
+      assert(copied.at(-1) === `${location.origin}/t/search-demo/300?u=local_test`, `复制链接不正确：${copied.at(-1)}`);
+      assert(state.toast.textContent.includes('链接已复制'), '没有复制提示');
+      article(4).querySelector('.ld-preview-post-action[title="复制此楼链接"]').click();
+      await until(() => copied.length === before + 2);
+      assert(copied.at(-1) === `${location.origin}/t/topic/300/4?u=local_test`, `楼层链接不正确：${copied.at(-1)}`);
+    });
+    await test('未登录或站点关闭分享用户名时不附带参数', async () => {
+      const preloaded = $('#data-preloaded'), original = preloaded.textContent;
+      const button = state.panel.querySelector('.ld-preview-action[aria-label="复制话题链接"]'), before = copied.length;
+      try {
+        preloaded.textContent = JSON.stringify({ ...JSON.parse(original), siteSettings:JSON.stringify({ enable_badges:true, allow_username_in_share_links:false }) });
+        button.click(); await until(() => copied.length === before + 1);
+        preloaded.textContent = JSON.stringify({ siteSettings:JSON.parse(original).siteSettings });
+        button.click(); await until(() => copied.length === before + 2);
+        preloaded.remove();
+        button.click(); await until(() => copied.length === before + 3);
+      } finally {
+        preloaded.textContent = original; if (!preloaded.isConnected) document.body.appendChild(preloaded);
+      }
+      assert(copied.slice(-3).every(url => url === `${location.origin}/t/search-demo/300`), `不应附带参数：${copied.slice(-3).join(' ')}`);
+    });
+    await test('加载中切换话题时复制正在加载的话题', async () => {
+      const button = state.panel.querySelector('.ld-preview-action[aria-label="复制话题链接"]'), before = copied.length;
+      const link = $('#reply-result'), href = link.getAttribute('href'); delayTopic = '700'; releaseTopic = null;
+      link.href = '/t/search-demo/700/4'; click('#reply-result'); await until(() => Boolean(releaseTopic));
+      button.click(); await until(() => copied.length === before + 1);
+      assert(copied.at(-1) === `${location.origin}/t/topic/700?u=local_test`, `加载中复制了上一个话题：${copied.at(-1)}`);
+      releaseTopic(); delayTopic = ''; await loaded(700); link.setAttribute('href', href);
     });
     await test('双栏收窄后长搜索标题无横向溢出，关闭恢复布局', async () => {
       await close(); state.viewMode = 'original'; click('#first-result'); await loaded(100); await settle();
