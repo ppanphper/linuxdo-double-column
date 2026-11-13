@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Linux.do 双栏阅读预览
 // @namespace    https://linux.do/
-// @version      0.17.0
-// @description  在 Linux.do 话题列表和搜索结果中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/话题与楼层收藏/投票/时间线及阅读时长上报）
+// @version      0.18.0
+// @description  在 Linux.do 话题列表、搜索结果和通知中用右侧面板预览帖子（支持原始楼层与树状评论双视图、热门排序、回复/点赞/话题与楼层收藏/投票/时间线及阅读时长上报）
 // @match        https://linux.do/*
 // @homepageURL  https://github.com/ppanphper/linuxdo-double-column
 // @supportURL   https://github.com/ppanphper/linuxdo-double-column/issues
@@ -31,6 +31,12 @@
   const CACHE_TTL = 5 * 60 * 1000;
   const HOVER_DELAY = 80;
   const MAX_PREFETCH = 4;
+  // 头像菜单与通知页共用 Discourse MenuItem；编辑通知保留原生跳转，以便查看修订记录。
+  const NOTIFICATION_LINK_SELECTOR = [
+    '.user-menu .quick-access-panel li.notification:not(.edited) > a',
+    '.user-menu .quick-access-panel li.message > a',
+    '.user-notifications-list li.notification:not(.edited) > a',
+  ].join(', ');
   const LIKE_ACTION_ID = 2;
   const TIMINGS_TICK_MS = 1000;
   const TIMINGS_FLUSH_MS = 20000;
@@ -5236,8 +5242,12 @@
     const link = target && typeof target.closest === 'function' ? target.closest('a[href]') : null;
     if (!link || link.closest(`#${PANEL_ID}`)) return null;
     // 搜索页使用 search-link；只接管结果标题，保留用户、分类、标签等原生导航。
-    return link.matches('a.title.raw-topic-link, .search-container .fps-result a.search-link')
+    return link.matches(`a.title.raw-topic-link, .search-container .fps-result a.search-link, ${NOTIFICATION_LINK_SELECTOR}`)
       || link.closest('tr.topic-list-item') ? link : null;
+  }
+
+  function closeUserMenu() {
+    if (document.querySelector('.user-menu.revamped')) document.querySelector('#toggle-current-user')?.click();
   }
 
   function handleTopicPointerOver(event) {
@@ -5275,7 +5285,12 @@
     if (!topicUrl) return;
 
     event.preventDefault();
-    event.stopImmediatePropagation();
+    if (target.matches(NOTIFICATION_LINK_SELECTOR)) {
+      // 通知项随后仍由站点标记已读；默认行为已取消时站点跳过路由，也不会关闭菜单。
+      if (target.closest('.user-menu')) setTimeout(closeUserMenu, 0);
+    } else {
+      event.stopImmediatePropagation();
+    }
     openPanel(topicUrl);
   }
 

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>正式脚本 · 通知预览回归验证</title>
+  <style>
+    :root { --primary:#202124; --secondary:#fff; --primary-low:#e2e5e9; --primary-medium:#6b7280; --tertiary:#176fa1; --tertiary-very-low:#eef6fb; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f6f7f9; color:var(--primary); font:15px/1.6 system-ui,sans-serif; }
+    .d-header-wrap { position:sticky; top:0; z-index:1000; }
+    .d-header { position:relative; display:flex; align-items:center; justify-content:space-between; height:60px; padding:0 24px; background:#fff; border-bottom:1px solid #ddd; }
+    .d-header-icons { display:flex; margin:0 0 0 auto; padding:0; list-style:none; }
+    #toggle-current-user { width:36px; height:36px; padding:0; border:0; border-radius:50%; background:#dce8e1; cursor:pointer; }
+    #current-user.active #toggle-current-user { outline:2px solid var(--tertiary); }
+    .user-menu { position:absolute; top:60px; right:12px; width:320px; background:#fff; border:1px solid #ddd; box-shadow:0 8px 24px rgba(0,0,0,.16); }
+    .menu-tabs-container { display:flex; flex-wrap:wrap; gap:4px; padding:6px; border-bottom:1px solid var(--primary-low); }
+    .menu-tabs-container button { font:inherit; font-size:13px; padding:2px 8px; white-space:nowrap; }
+    .quick-access-panel ul,.user-notifications-list { margin:0; padding:0; list-style:none; }
+    .quick-access-panel li > a,.user-notifications-list li > a { display:flex; gap:8px; padding:8px 12px; color:var(--primary); text-decoration:none; }
+    .quick-access-panel li.unread,.user-notifications-list li.unread { background:var(--tertiary-very-low); }
+    /* 对应 Discourse common/base/menu-panel.scss 的通知项布局 */
+    .quick-access-panel li > a > div,.user-notifications-list li > a > div { display:flex; flex-direction:column; overflow:hidden; }
+    .item-label { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-weight:600; }
+    .item-description { display:-webkit-box; overflow:hidden; overflow-wrap:break-word; -webkit-line-clamp:3; -webkit-box-orient:vertical; }
+    #main-outlet-wrapper { max-width:1200px; margin:auto; }
+    #main-outlet { padding:20px; }
+    h1 { font-size:22px; margin:0 0 12px; }
+    button { font:inherit; padding:6px 10px; }
+    #test-status { color:#126637; font-weight:600; }
+    #test-results { max-height:240px; overflow:auto; font-size:12px; }
+    .user-content-wrapper { display:flex; gap:24px; }
+    .user-navigation { flex:0 0 160px; }
+    .user-content { flex:1; min-width:0; background:#fff; border:1px solid var(--primary-low); }
+    .user-notifications-filter { padding:8px 12px; border-bottom:1px solid var(--primary-low); }
+    @media(max-width:780px) { .user-content-wrapper { display:block; } .user-menu { left:0; right:0; width:auto; } }
+  </style>
+</head>
+<body class="user-notifications-page">
+  <div class="d-header-wrap"><header class="d-header">
+    <span>LINUX DO · 本地通知验证</span>
+    <ul class="icons d-header-icons">
+      <li id="current-user" class="header-dropdown-toggle current-user user-menu-panel">
+        <button id="toggle-current-user" class="icon btn-flat" type="button" aria-haspopup="true" aria-label="个人资料、通知与消息"></button>
+      </li>
+    </ul>
+    <div id="user-menu-slot"></div>
+  </header></div>
+  <div id="main-outlet-wrapper"><main id="main-outlet">
+    <div class="container"><section class="user-main">
+      <h1>通知双栏预览</h1>
+      <p>使用正式脚本与 Discourse 通知菜单、通知页结构；全部 API 为本地模拟数据。</p>
+      <button id="run-tests" type="button">运行回归验证</button>
+      <div id="test-status" role="status">正在载入正式脚本…</div>
+      <details><summary>验证记录</summary><ol id="test-results"></ol></details>
+      <div class="user-content-wrapper">
+        <nav class="user-navigation"><a id="nav-summary" href="/u/test/summary">概要</a></nav>
+        <section class="user-content">
+          <div class="user-notifications-filter">全部通知</div>
+          <ul class="user-notifications-list">
+            <li class="notification unread mentioned"><a id="page-mention" href="/t/notify-demo/300/4" title="提及"><span>@</span><div><span class="item-label">星</span><span class="item-description" data-topic-id="300">通知页中的提及 · very_long_notification_title_without_spaces_abcdefghijklmnopqrstuvwxyz0123456789</span></div></a></li>
+            <li class="notification unread edited"><a id="page-edited" href="/t/notify-demo/300/2" title="编辑"><span>✎</span><div><span class="item-label">木</span><span class="item-description" data-topic-id="300">编辑了你的帖子</span></div></a></li>
+            <li class="notification read watching-first-post"><a id="page-first-post" href="/t/notify-demo/400" title="新话题"><span>◎</span><div><span class="item-label">水</span><span class="item-description" data-topic-id="400">未带楼层号的话题通知</span></div></a></li>
+            <li class="notification unread following"><a id="page-follow" href="/u/other" title="关注"><span>+</span><div><span class="item-label">火</span><span class="item-description">关注了你</span></div></a></li>
+          </ul>
+        </section>
+      </div>
+    </section></div>
+  </main></div>
+  <script src="notification-preview.js"></script>
+</body>
+</html>

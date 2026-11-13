@@ -23,3 +23,26 @@
 - `tests/search-preview.html` 运行正式事件、历史和渲染逻辑；API 全部本地模拟，不修改线上数据。
 - `tests/tree-preview.html` 保留原有深层回复回归。
 - 当前内置浏览器访问 Linux.do 搜索页跳转登录页，线上登录态及站点定制主题尚需实际安装验证。
+
+# 通知双栏预览
+
+## 目标与入口
+
+点击头像菜单或通知页 `/u/<用户名>/notifications` 中指向话题的通知时，在右侧预览面板打开并定位到通知楼层，保留当前页面。
+
+- 两处都由 Discourse `MenuItem` 渲染为 `li.notification > a`；头像菜单的私信标签页为 `li.message > a`。选择器并入现有链接识别函数，点击和悬停预取共用。
+- 只接管同源话题 URL。徽章、关注、群组收件箱等非话题通知，以及书签、审核项保持原生跳转。
+- 编辑通知 `li.edited` 保持原生跳转：站点会在打开话题后弹出修订记录，预览面板不提供修订对比。
+- 通知页的回复、提及等子页属于用户动态流，不在本次范围。
+
+## 已读与菜单
+
+- 站点在通知项冒泡阶段标记已读：更新本地状态，写入 `cn` cookie，下一次请求由服务端清除。随后 `wantsNewWindow` 发现默认行为已取消，跳过路由和关闭菜单。
+- 因此通知链接只调用 `preventDefault`，不阻止事件传播；其他入口仍使用 `stopImmediatePropagation`。
+- 头像菜单内的点击在事件结束后检测 `.user-menu.revamped`，菜单仍在时点击 `#toggle-current-user` 关闭。菜单关闭时线上不渲染 `aria-expanded`，不能作为判断依据。
+
+## 验证依据
+
+- 结构与行为来源：[MenuItem](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/components/user-menu/menu-item.gjs)、[通知项点击](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/lib/user-menu/notification-item.js)、[基础点击](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/lib/user-menu/base-item.js)、[wantsNewWindow](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/lib/intercept-click.js)、[服务端清除](https://github.com/discourse/discourse/blob/main/app/controllers/application_controller.rb)、[通知页模板](https://github.com/discourse/discourse/blob/main/frontend/discourse/app/templates/user/notifications-index.gjs)。
+- 2026-11-13 只读核对 linux.do（Discourse 2026.11.0-latest）通知页：60 条通知均为 `li.notification > a` 且指向话题 URL；左栏 680px 时无可见溢出，424px 时个人资料头部按钮会被面板遮挡，属用户页原有布局。
+- 头像菜单打开会把通知计为已查看，未在线上打开；菜单 DOM 依据源码及 `tests/notification-preview.html` 验证。
